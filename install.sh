@@ -96,21 +96,27 @@ if [ -f "${INSTALL_DIR}/.local_dev" ]; then
     echo -e "${GREEN}检测到本地开发模式 (.local_dev)，跳过 git pull/reset 保持本地修改。${PLAIN}"
 else
     if [ -d "${INSTALL_DIR}" ]; then
-        echo -e "  -> 目录 ${INSTALL_DIR} 已存在，正在更新并强制覆盖本地源码..."
-        cd "${INSTALL_DIR}"
-        git fetch --all || true
-        git checkout "${DEPLOY_BRANCH}" || git checkout -b "${DEPLOY_BRANCH}" "origin/${DEPLOY_BRANCH}" || true
-        echo -e "  -> 正在强制重置本地源码至 origin/${DEPLOY_BRANCH} ..."
-        if git reset --hard "origin/${DEPLOY_BRANCH}"; then
-            echo -e "${GREEN}  -> 源码更新成功！${PLAIN}"
-        else
-            if git pull origin "${DEPLOY_BRANCH}"; then
+        if [ -d "${INSTALL_DIR}/.git" ]; then
+            echo -e "  -> 目录 ${INSTALL_DIR} 已存在，正在更新并强制覆盖本地源码..."
+            cd "${INSTALL_DIR}"
+            git fetch --all || true
+            git checkout "${DEPLOY_BRANCH}" || git checkout -b "${DEPLOY_BRANCH}" "origin/${DEPLOY_BRANCH}" || true
+            echo -e "  -> 正在强制重置本地源码至 origin/${DEPLOY_BRANCH} ..."
+            if git reset --hard "origin/${DEPLOY_BRANCH}"; then
                 echo -e "${GREEN}  -> 源码更新成功！${PLAIN}"
             else
-                echo -e "${YELLOW}  -> 警告: git pull/reset 失败，将保留当前本地源码并继续安装。${PLAIN}"
+                if git pull origin "${DEPLOY_BRANCH}"; then
+                    echo -e "${GREEN}  -> 源码更新成功！${PLAIN}"
+                else
+                    echo -e "${YELLOW}  -> 警告: git pull/reset 失败，将保留当前本地源码并继续安装。${PLAIN}"
+                fi
             fi
+        else
+            echo -e "  -> 目录 ${INSTALL_DIR} 已存在但不是 Git 仓库，正在删除并重新克隆..."
+            rm -rf "${INSTALL_DIR}"
         fi
-    else
+    fi
+    if [ ! -d "${INSTALL_DIR}" ]; then
         echo -e "  -> 正在克隆 GitHub 仓库 ${GITHUB_URL} (分支: ${DEPLOY_BRANCH}) ..."
         if git clone -b "${DEPLOY_BRANCH}" "${GITHUB_URL}" "${INSTALL_DIR}"; then
             echo -e "${GREEN}  -> 克隆成功！${PLAIN}"
@@ -966,13 +972,22 @@ AUTH_FILE="${INSTALL_DIR}/vpngate_data/ui_auth.json"
 mkdir -p "${INSTALL_DIR}/vpngate_data"
 
 is_custom="n"
-if [ ! -f "$AUTH_FILE" ]; then
-    if [ -t 0 ]; then
+if [ -t 0 ]; then
+    if [ -f "$AUTH_FILE" ]; then
+        echo -e "\n${YELLOW}检测到已有配置文件，是否需要重新自定义配置网页端参数（端口/安全后缀/登录账号密码）？${PLAIN}"
+        read -p "是否重新自定义配置？[y/N]: " is_custom
+    else
         echo -e "\n${YELLOW}检测到是首次安装，是否需要自定义配置网页端参数（端口/安全后缀/登录账号密码）？${PLAIN}"
         read -p "是否自定义配置？[y/N]: " is_custom
-    else
-        echo -e "\n${YELLOW}检测到是非交互式/无TTY环境安装，已自动跳过网页端参数自定义配置，采用默认随机参数部署。${PLAIN}"
     fi
+else
+    echo -e "\n${YELLOW}检测到是非交互式/无TTY环境安装，已自动跳过网页端参数自定义配置，采用默认随机参数部署。${PLAIN}"
+fi
+
+# If auth file exists and user chose NOT to reconfigure, skip config generation
+if [ -f "$AUTH_FILE" ] && [[ ! "$is_custom" =~ ^[Yy]$ ]]; then
+    :
+else
     
     # Initialize defaults
     UI_PORT=8787
