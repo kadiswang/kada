@@ -180,10 +180,10 @@ else
     echo -e "${YELLOW}警告: 未能检测到 systemd 或 OpenRC，请手动管理服务。${PLAIN}"
 fi
 
-# 6. Configure global command shortcut "ml"
-echo -e "\n${YELLOW}[4/4] 正在创建全局命令快捷接口 'ml'...${PLAIN}"
-echo -e "  -> 正在写入管理脚本 /usr/bin/ml ..."
-cat > /usr/bin/ml <<'EOF'
+# 6. Configure global command shortcut "kd"
+echo -e "\n${YELLOW}[4/4] 正在创建全局命令快捷接口 'kd'...${PLAIN}"
+echo -e "  -> 正在写入管理脚本 /usr/bin/kd ..."
+cat > /usr/bin/kd <<'EOF'
 #!/usr/bin/env python3
 import sys
 import os
@@ -599,7 +599,7 @@ def uninstall_service():
             except Exception:
                 pass
         try:
-            os.unlink("/usr/bin/ml")
+            os.unlink("/usr/bin/kd")
         except Exception:
             pass
         subprocess.run(["rm", "-rf", INSTALL_DIR])
@@ -884,15 +884,15 @@ def main():
         sys.exit(0)
         
     options = {
-        '1': ("启动服务 (ml start)", start_service),
-        '2': ("停止服务 (ml stop)", stop_service),
-        '3': ("重启服务 (ml restart)", restart_service),
-        '4': ("日志监控 (ml logs)", show_logs),
-        '5': ("网页配置 (ml web)", configure_web),
-        '6': ("端口配置 (ml port)", configure_port),
-        '7': ("账号密码 (ml password)", configure_credentials),
-        '8': ("一键更新 (ml update)", update_service),
-        '9': ("完全卸载 (ml uninstall)", uninstall_service),
+        '1': ("启动服务 (kd start)", start_service),
+        '2': ("停止服务 (kd stop)", stop_service),
+        '3': ("重启服务 (kd restart)", restart_service),
+        '4': ("日志监控 (kd logs)", show_logs),
+        '5': ("网页配置 (kd web)", configure_web),
+        '6': ("端口配置 (kd port)", configure_port),
+        '7': ("账号密码 (kd password)", configure_credentials),
+        '8': ("一键更新 (kd update)", update_service),
+        '9': ("完全卸载 (kd uninstall)", uninstall_service),
         '0': ("退出终端", None)
     }
     
@@ -965,7 +965,7 @@ def main():
 if __name__ == "__main__":
     main()
 EOF
-chmod +x /usr/bin/ml
+chmod +x /usr/bin/kd
 
 # 7. Configure Custom parameters (First-time installation check)
 AUTH_FILE="${INSTALL_DIR}/vpngate_data/ui_auth.json"
@@ -1257,9 +1257,9 @@ echo -e "  * 网页管理账号:  ${YELLOW}${USERNAME}${PLAIN}"
 echo -e "  * 网页管理密码:  ${YELLOW}${PASSWORD}${PLAIN}"
 echo -e "  * HTTP/SOCKS5 代理端口:  ${BLUE}http://127.0.0.1:${PROXY_PORT}/${PLAIN}  或  ${BLUE}http://[::1]:${PROXY_PORT}/${PLAIN}"
 echo -e " --------------------------------------------------------"
-echo -e "  * 快速状态指令:   ${YELLOW}ml status${PLAIN}  或  ${YELLOW}ml${PLAIN}"
-echo -e "  * 查看实时日志:   ${YELLOW}ml logs${PLAIN}"
-echo -e "  * 停止服务:       ${YELLOW}ml stop${PLAIN}"
-echo -e "  * 重启服务:       ${YELLOW}ml restart${PLAIN}"
+echo -e "  * 快速状态指令:   ${YELLOW}kd status${PLAIN}  或  ${YELLOW}kd${PLAIN}"
+echo -e "  * 查看实时日志:   ${YELLOW}kd logs${PLAIN}"
+echo -e "  * 停止服务:       ${YELLOW}kd stop${PLAIN}"
+echo -e "  * 重启服务:       ${YELLOW}kd restart${PLAIN}"
 echo -e "=========================================================="
 echo
