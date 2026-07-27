@@ -38,7 +38,7 @@ AimiliVPN 是一款基于官方 VPNGate 开放协议的高性能、零依赖 VPN
 ```bash
 bash <(curl -Ls https://raw.githubusercontent.com/kadiswang/aimili-vpngate/main/install.sh)
 ```
-> 💡 **小贴士**：部署完成后，终端会输出管理网页的专属链接（含随机安全后缀，如 `http://your_vps_ip:8787/u71e9IXp4TPx`）。在终端中输入 `kd` 命令可以随时调出交互式命令行管理菜单。
+> 💡 **小贴士**：部署完成后，终端会输出管理网页的专属链接（含随机安全后缀，如 `http://your_vps_ip:8787/u71e9IXp4TPx`）。在终端中输入 `ml` 命令可以随时调出交互式命令行管理菜单。
 
 ---
 
@@ -119,7 +119,7 @@ bash <(curl -Ls https://raw.githubusercontent.com/kadiswang/aimili-vpngate/main/
 
 #### 4. VPN 已成功连接，但客户端设置代理后无法上网 (无流量)
 * **原因**：部分系统启用了严格的反向路径过滤（`rp_filter`），导致策略路由的入站/出站数据包被系统误判丢弃。
-* **解决办法**：在终端输入 `kd` 命令打开交互菜单，工具会自动检测并提示您将 `rp_filter` 修复为宽松模式（值为 `2`）。
+* **解决办法**：在终端输入 `ml` 命令打开交互菜单，工具会自动检测并提示您将 `rp_filter` 修复为宽松模式（值为 `2`）。
 
 ---
 
@@ -166,7 +166,7 @@ Run the corresponding command on your Linux VPS as root:
 bash <(curl -Ls https://raw.githubusercontent.com/kadiswang/aimili-vpngate/260621-refactor-ui-light-theme/install.sh)
 ```
 
-> 💡 **Quick Note**: Once installed, copy the printed URL from the terminal to access the Web UI. Type the `kd` command in the terminal to summon the interactive CLI management console.
+> 💡 **Quick Note**: Once installed, copy the printed URL from the terminal to access the Web UI. Type the `ml` command in the terminal to summon the interactive CLI management console.
 
 ---
 
