@@ -2040,6 +2040,20 @@ def maintain_valid_nodes(force: bool = False) -> str:
                             active_openvpn_node_id=active_openvpn_node_id,
                             valid_nodes=valid_nodes_count,
                         )
+                        with lock:
+                            final_nodes = read_nodes()
+                            active_id = active_openvpn_node_id
+                            filtered = [
+                                n for n in final_nodes
+                                if n.get("ip_type") in ("residential", "mobile")
+                                or (active_id and n.get("id") == active_id)
+                            ]
+                            if filtered:
+                                removed = len(final_nodes) - len(filtered)
+                                write_json(NODES_FILE, filtered)
+                                if removed > 0:
+                                    print(f"[节点过滤] 已清理 {removed} 个非家宽/移动节点，保留 {len(filtered)} 个节点", flush=True)
+                                    log_to_json("INFO", "Main", f"节点过滤: 清理 {removed} 个非家宽/移动节点，保留 {len(filtered)} 个")
                         return message
                     is_connecting = True
 
@@ -2094,6 +2108,21 @@ def maintain_valid_nodes(force: bool = False) -> str:
                         
                         if available_candidates:
                             auto_switch_node()
+
+            final_nodes = read_nodes()
+            active_id = active_openvpn_node_id
+            filtered = [
+                n for n in final_nodes
+                if n.get("ip_type") in ("residential", "mobile")
+                or (active_id and n.get("id") == active_id)
+            ]
+            if filtered:
+                removed = len(final_nodes) - len(filtered)
+                write_json(NODES_FILE, filtered)
+                merged = filtered
+                if removed > 0:
+                    print(f"[节点过滤] 已清理 {removed} 个非家宽/移动节点，保留 {len(filtered)} 个节点", flush=True)
+                    log_to_json("INFO", "Main", f"节点过滤: 清理 {removed} 个非家宽/移动节点，保留 {len(filtered)} 个")
 
         valid_nodes_count = len([n for n in merged if n.get("probe_status") == "available"])
         message = f"Fetched {len(candidates)} nodes. Tested {len(to_test_ids)} non-active nodes."
