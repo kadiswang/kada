@@ -1971,6 +1971,11 @@ def maintain_valid_nodes(force: bool = False) -> str:
                                 cand[key] = previous.get(key)
                     merged.append(cand)
                     seen_ids.add(cand["id"])
+
+            for n in kept_nodes:
+                if n.get("id") not in seen_ids:
+                    merged.append(n)
+                    seen_ids.add(n["id"])
                     
             if len(merged) > 1000:
                 merged = merged[:1000]
