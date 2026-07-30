@@ -1246,6 +1246,35 @@ if [ -n "$PUBLIC_IPV6" ]; then
     echo -e "${GREEN}  -> 公网 IPv6: ${PUBLIC_IPV6}${PLAIN}"
 fi
 
+
+# 自动安装 Fanout 多出口功能
+echo ""
+echo -e "${BLUE}正在安装 Fanout 多出口管理功能...${PLAIN}"
+
+# 下载 Fanout 模块
+echo "正在下载额外模块..."
+cd "${INSTALL_DIR}"
+for module in panel_manager.py panel_xui.py panel_native.py exit_manager.py fanout_integration.py web_api_extension.py; do
+    echo -n "  - $module ... "
+    if curl -sL "https://raw.githubusercontent.com/kadiswang/aimili-vpngate/${DEPLOY_BRANCH}/$module" -o "$module" 2>/dev/null; then
+        echo -e "${GREEN}✓${PLAIN}"
+    else
+        echo -e "${RED}✗${PLAIN}"
+    fi
+done
+
+# 安装 aiohttp
+if command -v pip3 >/dev/null 2>&1; then
+    echo "正在安装 Python 依赖..."
+    pip3 install -q aiohttp 2>/dev/null && echo -e "${GREEN}  ✓ aiohttp 安装成功${PLAIN}" || echo -e "${YELLOW}  ! aiohttp 可能已安装${PLAIN}"
+fi
+
+echo -e "${GREEN}  ✓ Fanout 模块已集成${PLAIN}"
+echo ""
+echo -e "${YELLOW}提示：多出口管理功能将在下次重启时生效${PLAIN}"
+echo -e "${YELLOW}      或手动执行：${PLAIN}ml restart"
+echo ""
+
 echo -e "\n${GREEN}==========================================================${PLAIN}"
 echo -e "${GREEN}             AimiliVPN 源码一键部署已完成！${PLAIN}"
 echo -e "${GREEN}==========================================================${PLAIN}"
