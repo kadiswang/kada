@@ -3377,6 +3377,101 @@ INDEX_HTML = r"""<!doctype html>
 
     /* backward-compatible aliases for legacy template references */
     .stat-icon-wrapper { width: 42px; height: 42px; border-radius: 10px; display: flex; align-items: center; justify-content: center; flex-shrink: 0; }
+
+    /* ============== 出站代理卡片样式（与 active-card / stat-card 视觉一致） ============== */
+    .egress-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fill, minmax(320px, 1fr));
+      gap: 14px;
+      margin-top: 4px;
+    }
+    .egress-card {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: 12px;
+      padding: 18px 20px;
+      display: flex;
+      align-items: center;
+      gap: 14px;
+      box-shadow: var(--shadow-sm);
+      transition: border-color .15s ease, box-shadow .15s ease;
+    }
+    .egress-card:hover { border-color: var(--border-light); box-shadow: 0 4px 12px rgba(0,0,0,0.04); }
+    .egress-card .egress-icon {
+      width: 42px; height: 42px;
+      border-radius: 10px;
+      display: flex; align-items: center; justify-content: center;
+      flex-shrink: 0;
+      background: rgba(99, 102, 241, 0.12);
+      border: 1px solid rgba(99, 102, 241, 0.25);
+    }
+    .egress-card .egress-icon svg { width: 20px; height: 20px; color: var(--primary, #6366f1); }
+    .egress-card.is-default .egress-icon {
+      background: rgba(16, 185, 129, 0.12);
+      border-color: rgba(16, 185, 129, 0.25);
+    }
+    .egress-card.is-default .egress-icon svg { color: #10b981; }
+    .egress-card.is-down .egress-icon {
+      background: rgba(244, 63, 94, 0.10);
+      border-color: rgba(244, 63, 94, 0.20);
+    }
+    .egress-card.is-down .egress-icon svg { color: var(--danger, #ef4444); }
+    .egress-card .egress-body { flex: 1; min-width: 0; }
+    .egress-card .egress-title {
+      font-size: 15px; font-weight: 600;
+      color: var(--text);
+      display: flex; align-items: center; gap: 8px;
+      margin-bottom: 6px;
+    }
+    .egress-card .egress-title .port-num {
+      font-family: ui-monospace, "SF Mono", Menlo, monospace;
+      font-size: 14px;
+      color: var(--primary, #6366f1);
+      background: rgba(99, 102, 241, 0.08);
+      padding: 2px 8px; border-radius: 6px;
+    }
+    .egress-card .egress-meta {
+      display: flex; flex-wrap: wrap; gap: 6px 10px;
+      font-size: 12px; color: var(--text-muted);
+    }
+    .egress-card .egress-meta .meta-item {
+      display: inline-flex; align-items: center; gap: 4px;
+    }
+    .egress-card .egress-meta .meta-key { color: var(--text-muted); }
+    .egress-card .egress-meta .meta-val { color: var(--text); font-weight: 500; }
+    .egress-card .egress-actions { flex-shrink: 0; }
+    .egress-card .egress-actions .btn-danger {
+      height: 32px; padding: 0 12px; font-size: 12px;
+      border-radius: 8px;
+      display: inline-flex; align-items: center; gap: 4px;
+    }
+    .egress-card .egress-actions .btn-danger svg { width: 14px; height: 14px; }
+    .egress-empty {
+      padding: 28px 20px;
+      text-align: center;
+      background: var(--surface);
+      border: 1px dashed var(--border);
+      border-radius: 12px;
+      color: var(--text-muted);
+      font-size: 13px;
+    }
+    .egress-default-row {
+      margin-top: 18px;
+      padding-top: 14px;
+      border-top: 1px dashed var(--border, #e5e7eb);
+      display: flex; align-items: center; gap: 10px;
+      color: var(--text-muted);
+      font-size: 12px;
+    }
+    .egress-default-row .dot {
+      width: 6px; height: 6px; border-radius: 50%;
+      background: #10b981;
+      box-shadow: 0 0 0 3px rgba(16,185,129,0.18);
+    }
+    @media (max-width: 640px) {
+      .egress-grid { grid-template-columns: 1fr; }
+      .egress-card { padding: 14px 16px; }
+    }
     .active-card-info { display: flex; align-items: center; gap: 16px; }
     .active-card-value { font-size: 24px; font-weight: 700; color: var(--text); }
     .badge-pulse { width: 6px; height: 6px; border-radius: 50%; background: currentColor; animation: pulse 1.5s infinite; display: inline-block; }
@@ -4870,37 +4965,42 @@ async function loadEgress() {
 function renderEgress() {
   const list = $("egress_list");
   if (!list) return;
-  let html = "";
-  // 已配置的出口（每排一个）
+  // 已配置的出口（卡片网格）
+  let cards = "";
   if (!egressRegions.length) {
-    html += "<div style='padding:10px 4px;color:var(--text-secondary);font-size:13px;'>当前只有默认出口 7928。点击上方「添加出站代理」即可增加 7929、7930……（每添加一个，上方自动多出一排）</div>";
+    cards = "<div class='egress-empty'>当前没有自建出站代理。点击上方「添加出站代理」即可创建 7929、7930……</div>";
+  } else {
+    cards = "<div class='egress-grid'>" + egressRegions.map(function(r) {
+      const isDown = !r.alive;
+      const statusLabel = r.alive ? "🟢 运行中" : "🟡 未启动";
+      const title = r.slot_id;
+      return "<div class='egress-card" + (isDown ? " is-down" : "") + "'>" +
+        "<div class='egress-icon'>" +
+          "<svg viewBox='0 0 24 24' fill='none' stroke='currentColor' stroke-width='2'><path d='M3 12h18M3 6h18M3 18h18'/></svg>" +
+        "</div>" +
+        "<div class='egress-body'>" +
+          "<div class='egress-title'>" + escAttr(title) + " <span class='port-num'>端口 " + r.proxy_port + "</span></div>" +
+          "<div class='egress-meta'>" +
+            "<span class='meta-item'><span class='meta-key'>状态</span><span class='meta-val'>" + statusLabel + "</span></span>" +
+          "</div>" +
+        "</div>" +
+        "<div class='egress-actions'>" +
+          "<button class='btn-danger' onclick=\"delEgress('" + escAttr(r.slot_id) + "')\">" +
+            "<svg viewBox='0 0 24 24' fill='none' stroke='currentColor' stroke-width='2'><path d='M3 6h18M8 6V4a2 2 0 012-2h4a2 2 0 012 2v2m3 0v14a2 2 0 01-2 2H7a2 2 0 01-2-2V6h14z'/></svg>" +
+            "删除" +
+          "</button>" +
+        "</div>" +
+      "</div>";
+    }).join("") + "</div>";
   }
-  for (const r of egressRegions) {
-    const status = r.alive ? "🟢 运行中" : "🟡 已配置，未启动";
-    html += egressRow(r.slot_id + "（端口 " + r.proxy_port + "）", "状态：" + status, false, r.slot_id);
-  }
-  // 默认出口 7928：始终在最下面的空白区，仅作说明性提示（不可操作）
-  html += "<div style='margin-top:18px;padding-top:14px;border-top:1px dashed var(--border,#e5e7eb);'>" +
-    "<div style='font-size:12px;color:var(--text-tertiary,#9ca3af);margin-bottom:6px;letter-spacing:0.5px;'>常驻（不可删除）</div>" +
-    "<div style='display:flex;align-items:center;justify-content:space-between;gap:12px;padding:10px 14px;border:1px dashed var(--border,#e5e7eb);border-radius:8px;background:transparent;'>" +
-    "<div><div style='font-weight:500;font-size:14px;color:var(--text-secondary);'>默认出口</div>" +
-    "<div style='font-size:12px;color:var(--text-tertiary);margin-top:2px;'>端口 7928 ｜ 🟢 常驻 ｜ 始终存在</div></div>" +
-    "<div><span style='color:var(--text-tertiary,#9ca3af);font-size:12px;'>不可删除</span></div>" +
-    "</div></div>";
-  list.innerHTML = html;
+  // 底部"常驻"说明区（默认 7928）
+  const defaultRow = "<div class='egress-default-row'>" +
+    "<span class='dot'></span>" +
+    "<span>默认出口（端口 7928 · 🟢 常驻 · 始终存在 · 不可删除）</span>" +
+  "</div>";
+  list.innerHTML = cards + defaultRow;
 }
-function egressRow(title, meta, isDefault, delSlotId) {
-  const badge = isDefault
-    ? "<span style='display:inline-block;margin-right:8px;padding:2px 8px;border-radius:6px;background:var(--accent,#6366f1);color:#fff;font-size:12px;vertical-align:middle;'>默认</span>"
-    : "";
-  const action = isDefault
-    ? "<span style='color:var(--text-tertiary,#9ca3af);font-size:13px;'>不可删除</span>"
-    : "<span style='color:var(--danger,#ef4444);cursor:pointer;font-size:13px;font-weight:600;' onclick=\"delEgress('" + delSlotId + "')\">删除</span>";
-  return "<div style='display:flex;align-items:center;justify-content:space-between;gap:12px;padding:14px 16px;border:1px solid " + (isDefault ? "var(--accent,#6366f1)" : "var(--border,#e5e7eb)") + ";border-radius:10px;background:var(--surface,#fff);margin-bottom:10px;'>" +
-    "<div><div style='font-weight:600;font-size:15px;color:var(--text-primary);'>" + badge + title + "</div>" +
-    "<div style='font-size:13px;color:var(--text-secondary);margin-top:4px;'>" + meta + "</div></div>" +
-    "<div>" + action + "</div></div>";
-}
+function escAttr(s) { return String(s || "").replace(/'/g, "&#39;").replace(/"/g, "&quot;").replace(/</g, "&lt;"); }
 async function addEgress() {
   const data = await fetchWithCsrf("./api/egress_regions", { method: "POST", body: JSON.stringify({}) });
   if (!data.ok) { alert("添加失败：" + (data.error || "")); return; }
@@ -4924,15 +5024,41 @@ async function loadEgressStatus() {
     const data = await fetchWithCsrf("./api/egress_status_all");
     const list = data.egress || [];
     if (!list.length) { box.innerHTML = ""; return; }
-    box.innerHTML = "<div style='width:100%;font-size:15px;font-weight:600;color:var(--text-primary);margin-bottom:4px;'>出站代理状态</div>" + list.map(function(e) {
-      const status = e.alive ? "🟢" : "🔴";
-      const label = e.is_default ? "默认出口 (7928)" : (e.name + " (" + e.proxy_port + ")");
-      const mode = ({auto:"自动",fixed_ip:"固定IP",fixed_region:"固定地区",favorites:"收藏"}[e.routing_mode] || e.routing_mode);
-      const country = e.force_country ? "锁定：" + e.force_country : "自动";
-      const ipType = ({all:"所有IP",residential:"住宅IP",hosting:"机房IP"}[e.routing_ip_type] || e.routing_ip_type);
-      const node = e.active_node_id ? "节点：" + e.active_node_id : "未连接";
-      return "<div class='egress-card'><div class='egress-card-title'>" + label + " " + status + "</div><div class='egress-card-meta'>模式：" + mode + " ｜ 国家：" + country + " ｜ 类型：" + ipType + " ｜ " + node + "</div></div>";
-    }).join("");
+    const heading = "<div style='display:flex;align-items:center;gap:10px;margin:6px 0 12px;'>" +
+      "<span style='font-size:15px;font-weight:600;color:var(--text);'>出站代理状态</span>" +
+      "<span style='font-size:12px;color:var(--text-muted);'>共 " + list.length + " 个出口</span>" +
+    "</div>";
+    const grid = "<div class='egress-grid'>" + list.map(function(e) {
+      const modeMap = {auto:"自动配置",fixed_ip:"固定IP",fixed_region:"固定地区",favorites:"收藏"};
+      const ipMap = {all:"所有IP",residential:"住宅IP",hosting:"机房IP"};
+      const mode = modeMap[e.routing_mode] || (e.routing_mode || "自动");
+      const country = e.force_country ? ("锁定:" + e.force_country) : "自动";
+      const ipType = ipMap[e.routing_ip_type] || (e.routing_ip_type || "所有IP");
+      const isDefault = !!e.is_default;
+      const isDown = !e.alive;
+      const statusIcon = isDown
+        ? "<svg viewBox='0 0 24 24' fill='none' stroke='currentColor' stroke-width='2'><circle cx='12' cy='12' r='10'/><path d='M9 9l6 6M15 9l-6 6'/></svg>"
+        : (isDefault
+          ? "<svg viewBox='0 0 24 24' fill='none' stroke='currentColor' stroke-width='2'><path d='M5 13l4 4L19 7'/></svg>"
+          : "<svg viewBox='0 0 24 24' fill='none' stroke='currentColor' stroke-width='2'><path d='M3 12h18M3 6h18M3 18h18'/></svg>");
+      const titleText = isDefault ? "默认出口" : e.name;
+      const port = e.proxy_port || 7928;
+      const metaItems = [
+        "<span class='meta-item'><span class='meta-key'>模式</span><span class='meta-val'>" + escAttr(mode) + "</span></span>",
+        "<span class='meta-item'><span class='meta-key'>国家</span><span class='meta-val'>" + escAttr(country) + "</span></span>",
+        "<span class='meta-item'><span class='meta-key'>类型</span><span class='meta-val'>" + escAttr(ipType) + "</span></span>",
+      ];
+      if (e.active_node_id) metaItems.push("<span class='meta-item'><span class='meta-key'>节点</span><span class='meta-val'>" + escAttr(e.active_node_id) + "</span></span>");
+      else metaItems.push("<span class='meta-item'><span class='meta-key'>节点</span><span class='meta-val'>未连接</span></span>");
+      return "<div class='egress-card" + (isDefault ? " is-default" : "") + (isDown ? " is-down" : "") + "'>" +
+        "<div class='egress-icon'>" + statusIcon + "</div>" +
+        "<div class='egress-body'>" +
+          "<div class='egress-title'>" + escAttr(titleText) + " <span class='port-num'>端口 " + port + "</span></div>" +
+          "<div class='egress-meta'>" + metaItems.join("") + "</div>" +
+        "</div>" +
+      "</div>";
+    }).join("") + "</div>";
+    box.innerHTML = heading + grid;
   } catch (e) { box.innerHTML = ""; }
 }
 
@@ -5770,12 +5896,22 @@ URL.revokeObjectURL(url);
 </script>
 
   <div id="page_egress" class="page-content" style="display:none;">
-    <section class="toolbar" style="padding:20px;">
-      <h2 style="margin:0 0 8px;font-size:20px;">出站代理</h2>
-      <p style="color:var(--text-secondary);margin:0 0 16px;line-height:1.6;">这里只决定要几个 <span style="color:var(--accent,#6366f1);font-weight:600;">HTTP/SOCKS5 出站代理</span>。每个代理是一套独立隧道，端口自动顺延（默认出口为 <b>7928</b>，新增的从 7929 起）。所有代理<span style="color:var(--accent,#6366f1);font-weight:600;">共用同一份节点池</span>（只拉取一次，不会重复拉取）。配置每个出口的国家 / IP / 住宅，请到 <b>代理设置</b> 页选择对应出口后再设置。</p>
-      <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center;margin-bottom:16px;">
-        <button class="primary" onclick="addEgress()" style="padding:8px 16px;border:none;border-radius:8px;background:var(--accent,#6366f1);color:#fff;cursor:pointer;font-weight:600;">+ 添加出站代理</button>
-        <button onclick="loadEgress()" style="padding:8px 16px;border:1px solid var(--border,#e5e7eb);border-radius:8px;background:var(--bg-input,#fff);color:var(--text-primary);cursor:pointer;">刷新状态</button>
+    <section class="toolbar" style="padding:20px; flex-direction:column; align-items:stretch; gap:14px;">
+      <div style="display:flex;align-items:center;justify-content:space-between;gap:12px;flex-wrap:wrap;">
+        <div>
+          <h2 style="margin:0 0 4px;font-size:20px;font-weight:600;">出站代理</h2>
+          <p style="color:var(--text-muted);margin:0;font-size:13px;line-height:1.6;">这里只决定要几个 <strong style="color:var(--text);">HTTP/SOCKS5 出站代理</strong>。每个代理是一套独立隧道，端口自动顺延（默认 7928，新增从 7929 起）。所有代理<strong style="color:var(--text);">共用同一份节点池</strong>（只拉取一次，不重复抓）。</p>
+        </div>
+        <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center;">
+          <button class="btn-primary" onclick="addEgress()" style="height:36px;padding:0 14px;border-radius:8px;font-weight:600;display:inline-flex;align-items:center;gap:6px;">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" style="width:14px;height:14px;"><path d="M12 5v14M5 12h14"/></svg>
+            添加出站代理
+          </button>
+          <button class="btn-ghost" onclick="loadEgress()" style="height:36px;padding:0 14px;border-radius:8px;display:inline-flex;align-items:center;gap:6px;">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="width:14px;height:14px;"><path d="M23 4v6h-6M1 20v-6h6M3.51 9a9 9 0 0114.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0020.49 15"/></svg>
+            刷新状态
+          </button>
+        </div>
       </div>
       <div id="egress_list" style="display:block;"></div>
     </section>
