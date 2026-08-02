@@ -4871,15 +4871,29 @@ async function loadEgress() {
 function renderEgress() {
   const list = $("egress_list");
   if (!list) return;
-  let html = "<div class='egress-card'><div class='egress-card-title'>默认出口（7928）</div><div class='egress-card-meta'>状态：🟢 常驻 ｜ 端口：7928 ｜ 不可删除</div></div>";
+  let html = "";
+  // 默认出口：单独第一排（常驻，不可删除）
+  html += egressRow("默认出口（7928）", "🟢 常驻 ｜ 端口 7928 ｜ 不可删除", true, null);
   if (!egressRegions.length) {
-    html += "<div style='padding:12px 0;color:var(--text-secondary);'>当前只有默认出口 7928。点击「添加出站代理」即可增加 7929、7930……</div>";
+    html += "<div style='padding:10px 4px;color:var(--text-secondary);font-size:13px;'>当前只有默认出口 7928。点击下方「添加出站代理」即可增加 7929、7930……（每添加一个，下方自动多出一排）</div>";
   }
   for (const r of egressRegions) {
-    const status = r.alive ? "🟢 运行中" : "🔴 已停止";
-    html += "<div class='egress-card'><div class='egress-card-title'>" + r.slot_id + "（端口 " + r.proxy_port + "）</div><div class='egress-card-meta'>状态：" + status + " ｜ <span style='color:var(--danger);cursor:pointer;' onclick=\"delEgress('" + r.slot_id + "')\">删除</span></div></div>";
+    const status = r.alive ? "🟢 运行中" : "🟡 已配置，未启动";
+    html += egressRow(r.slot_id + "（端口 " + r.proxy_port + "）", "状态：" + status, false, r.slot_id);
   }
   list.innerHTML = html;
+}
+function egressRow(title, meta, isDefault, delSlotId) {
+  const badge = isDefault
+    ? "<span style='display:inline-block;margin-right:8px;padding:2px 8px;border-radius:6px;background:var(--accent,#6366f1);color:#fff;font-size:12px;vertical-align:middle;'>默认</span>"
+    : "";
+  const action = isDefault
+    ? "<span style='color:var(--text-tertiary,#9ca3af);font-size:13px;'>不可删除</span>"
+    : "<span style='color:var(--danger,#ef4444);cursor:pointer;font-size:13px;font-weight:600;' onclick=\"delEgress('" + delSlotId + "')\">删除</span>";
+  return "<div style='display:flex;align-items:center;justify-content:space-between;gap:12px;padding:14px 16px;border:1px solid " + (isDefault ? "var(--accent,#6366f1)" : "var(--border,#e5e7eb)") + ";border-radius:10px;background:var(--surface,#fff);margin-bottom:10px;'>" +
+    "<div><div style='font-weight:600;font-size:15px;color:var(--text-primary);'>" + badge + title + "</div>" +
+    "<div style='font-size:13px;color:var(--text-secondary);margin-top:4px;'>" + meta + "</div></div>" +
+    "<div>" + action + "</div></div>";
 }
 async function addEgress() {
   const resp = await fetchWithCsrf("./api/egress_regions", { method: "POST", body: JSON.stringify({}) });
@@ -5761,7 +5775,7 @@ URL.revokeObjectURL(url);
         <button class="primary" onclick="addEgress()" style="padding:8px 16px;border:none;border-radius:8px;background:var(--accent,#6366f1);color:#fff;cursor:pointer;font-weight:600;">+ 添加出站代理</button>
         <button onclick="loadEgress()" style="padding:8px 16px;border:1px solid var(--border,#e5e7eb);border-radius:8px;background:var(--bg-input,#fff);color:var(--text-primary);cursor:pointer;">刷新状态</button>
       </div>
-      <div id="egress_list" style="display:flex;gap:12px;flex-wrap:wrap;"></div>
+      <div id="egress_list" style="display:block;"></div>
     </section>
   </div>
 
@@ -6131,9 +6145,7 @@ class Handler(BaseHTTPRequestHandler):
         elif effective_path == "/api/egress_regions":
             try:
                 ui_cfg = _cached_load_ui_config()
-                regions = EGRESS_ORCH.status() if EGRESS_ORCH else []
-                for r in regions:
-                    r["panel_url"] = f"http://127.0.0.1:{r['ui_port']}/"
+                regions = _build_egress_regions(ui_cfg)
                 self.send_json({
                     "configured": bool(ui_cfg.get("slots")),
                     "regions": regions,
@@ -6146,6 +6158,11 @@ class Handler(BaseHTTPRequestHandler):
                 self.send_json(get_instance_egress_status())
             except Exception as exc:
                 self.send_json({"error": str(exc)}, HTTPStatus.INTERNAL_SERVER_ERROR)
+        elif effective_path == "/api/egress_status_all":
+            try:
+                self.send_json({"ok": True, "egress": aggregate_egress_status()})
+            except Exception as exc:
+                self.send_json({"ok": False, "error": str(exc)}, HTTPStatus.INTERNAL_SERVER_ERROR)
         elif effective_path.startswith("/configs/"):
             filename = urllib.parse.unquote(effective_path.removeprefix("/configs/"))
             with lock:
@@ -6702,14 +6719,16 @@ class Handler(BaseHTTPRequestHandler):
                     DATA_DIR.mkdir(exist_ok=True, parents=True)
                     write_json(auth_file, ui_cfg)
                 _config_cache = None
-                # 若首次添加出口（EGRESS_ORCH 尚未启动），按需拉起编排器，
-                # 否则后续 GET /api/egress_regions 永远返回空、新增的出口不会出现在面板。
-                _ensure_egress_orch(ui_cfg)
-                if EGRESS_ORCH is not None:
-                    EGRESS_ORCH.sync(ui_cfg)
-                regions = EGRESS_ORCH.status() if EGRESS_ORCH else []
-                for r in regions:
-                    r["panel_url"] = f"http://127.0.0.1:{r['ui_port']}/"
+                # 保存配置即可：编排器启动/同步失败不阻断「添加/删除」——配置已落盘，
+                # 子进程可在本进程重启后或稍后自动拉起。列表始终从配置读取，与
+                # 子进程是否存活解耦，避免面板永远看不到新增出口。
+                try:
+                    _ensure_egress_orch(ui_cfg)
+                    if EGRESS_ORCH is not None:
+                        EGRESS_ORCH.sync(ui_cfg)
+                except Exception as exc:
+                    log_to_json("ERROR", "Egress", f"编排器启动/同步失败(配置已保存): {exc}")
+                regions = _build_egress_regions(ui_cfg)
                 self.send_json({"ok": True, "regions": regions})
             except Exception as exc:
                 self.send_json({"ok": False, "error": str(exc)}, HTTPStatus.INTERNAL_SERVER_ERROR)
@@ -6728,14 +6747,16 @@ class Handler(BaseHTTPRequestHandler):
                     DATA_DIR.mkdir(exist_ok=True, parents=True)
                     write_json(auth_file, ui_cfg)
                 _config_cache = None
-                # 若首次添加出口（EGRESS_ORCH 尚未启动），按需拉起编排器，
-                # 否则后续 GET /api/egress_regions 永远返回空、新增的出口不会出现在面板。
-                _ensure_egress_orch(ui_cfg)
-                if EGRESS_ORCH is not None:
-                    EGRESS_ORCH.sync(ui_cfg)
-                regions = EGRESS_ORCH.status() if EGRESS_ORCH else []
-                for r in regions:
-                    r["panel_url"] = f"http://127.0.0.1:{r['ui_port']}/"
+                # 保存配置即可：编排器启动/同步失败不阻断「添加/删除」——配置已落盘，
+                # 子进程可在本进程重启后或稍后自动拉起。列表始终从配置读取，与
+                # 子进程是否存活解耦，避免面板永远看不到新增出口。
+                try:
+                    _ensure_egress_orch(ui_cfg)
+                    if EGRESS_ORCH is not None:
+                        EGRESS_ORCH.sync(ui_cfg)
+                except Exception as exc:
+                    log_to_json("ERROR", "Egress", f"编排器启动/同步失败(配置已保存): {exc}")
+                regions = _build_egress_regions(ui_cfg)
                 self.send_json({"ok": True, "regions": regions})
             except Exception as exc:
                 self.send_json({"ok": False, "error": str(exc)}, HTTPStatus.INTERNAL_SERVER_ERROR)
@@ -7000,6 +7021,31 @@ def egress_forward(ui_port: int, path: str, payload: dict[str, Any]) -> dict[str
     )
     with urllib.request.urlopen(req, timeout=5) as r:
         return json.loads(r.read().decode("utf-8"))
+
+
+def _build_egress_regions(ui_cfg: dict[str, Any]) -> list[dict[str, Any]]:
+    """从已保存配置 (ui_cfg.slots) 构建出站代理列表。
+
+    设计要点：列表只反映「配置了多少个出口」，不再依赖子进程是否已拉起
+    (EGRESS_ORCH.status())。这样即使子进程尚未启动 / 拉起失败，面板上也能
+    正确显示已配置的出口；alive 通过探测代理端口得到，未启动显示 🔴。
+    """
+    regions: list[dict[str, Any]] = []
+    for s in (ui_cfg.get("slots") or []):
+        try:
+            slot_id = str(s.get("slot_id") or "")
+            port = int(s.get("proxy_port") or 0)
+        except (TypeError, ValueError):
+            continue
+        if not slot_id or not port:
+            continue
+        regions.append({
+            "slot_id": slot_id,
+            "proxy_port": port,
+            "region": str(s.get("region") or ""),
+            "alive": _quick_proxy_listen(port),
+        })
+    return regions
 
 
 def aggregate_egress_status() -> list[dict[str, Any]]:

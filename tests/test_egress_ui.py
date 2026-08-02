@@ -39,6 +39,34 @@ class TestEgressProxyPort(unittest.TestCase):
         self.assertEqual(orch._proxy_port_for(1), 7930)
 
 
+class TestBuildEgressRegions(unittest.TestCase):
+    def test_builds_from_slots_not_from_orchestrator(self):
+        # 关键回归：列表必须来自已保存配置(ui_cfg.slots)，不依赖 EGRESS_ORCH
+        # 是否存活，否则新增出口在面板里永远看不到、也加不上。
+        ui_cfg = {
+            "slots": [
+                {"slot_id": "egress_1", "proxy_port": 7929, "region": "JP"},
+                {"slot_id": "egress_2", "proxy_port": 7930, "region": ""},
+            ]
+        }
+        with mock.patch.object(vm, "_quick_proxy_listen", return_value=True):
+            regions = vm._build_egress_regions(ui_cfg)
+        self.assertEqual(len(regions), 2)
+        self.assertEqual(regions[0]["slot_id"], "egress_1")
+        self.assertEqual(regions[0]["proxy_port"], 7929)
+        self.assertTrue(regions[0]["alive"])
+        self.assertEqual(regions[1]["proxy_port"], 7930)
+
+    def test_skips_invalid_slots(self):
+        ui_cfg = {"slots": [{"slot_id": "", "proxy_port": 0}, {"region": "JP"}]}
+        with mock.patch.object(vm, "_quick_proxy_listen", return_value=False):
+            regions = vm._build_egress_regions(ui_cfg)
+        self.assertEqual(regions, [])
+
+    def test_empty_when_no_slots(self):
+        self.assertEqual(vm._build_egress_regions({}), [])
+
+
 class TestEgressForward(unittest.TestCase):
     def test_egress_forward_fetches_csrf_and_forwards(self):
         captured = []
