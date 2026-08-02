@@ -3712,7 +3712,7 @@ INDEX_HTML = r"""<!doctype html>
       <!-- Rendered dynamically by render() -->
     </section>
 
-    <div id="egress_status_blocks" style="display:flex;gap:12px;flex-wrap:wrap;margin-bottom:24px;"></div>
+    <div id="egress_status_blocks" style="display:flex;flex-direction:column;gap:12px;margin-bottom:24px;"></div>
 
     <div style="display: flex; align-items: center; justify-content: space-between; margin-bottom: 16px; flex-wrap: wrap; gap: 8px;">
       <span style="font-size: 15px; font-weight: 600; color: var(--text-primary);">节点列表</span>
@@ -4965,34 +4965,51 @@ async function loadEgress() {
 function renderEgress() {
   const list = $("egress_list");
   if (!list) return;
-  // 已配置的出口（卡片网格）
-  let cards = "";
   if (!egressRegions.length) {
-    cards = "<div class='egress-empty'>当前没有自建出站代理。点击上方「添加出站代理」即可创建 7929、7930……</div>";
-  } else {
-    cards = "<div class='egress-grid'>" + egressRegions.map(function(r) {
-      const isDown = !r.alive;
-      const statusLabel = r.alive ? "🟢 运行中" : "🟡 未启动";
-      const title = r.slot_id;
-      return "<div class='egress-card" + (isDown ? " is-down" : "") + "'>" +
-        "<div class='egress-icon'>" +
-          "<svg viewBox='0 0 24 24' fill='none' stroke='currentColor' stroke-width='2'><path d='M3 12h18M3 6h18M3 18h18'/></svg>" +
+    list.innerHTML = "<div class='egress-empty'>当前没有自建出站代理。点击上方「添加出站代理」即可创建 7929、7930……</div>" +
+      "<div class='egress-default-row'>" +
+        "<span class='dot'></span>" +
+        "<span>默认出口（端口 7928 · 🟢 常驻 · 始终存在 · 不可删除）</span>" +
+      "</div>";
+    return;
+  }
+  // 用与"已连接节点"同款 .active-card 横向大卡片渲染（信息密度对齐概览/节点管理）
+  const cards = egressRegions.map(function(r) {
+    const isDown = !r.alive;
+    const statusBadge = isDown
+      ? "<span class='badge' style='background: rgba(148,163,184,0.15); color: #64748b; border-color: rgba(148,163,184,0.3);'>未启动</span>"
+      : "<span class='badge available'><span class='badge-pulse'></span>运行中</span>";
+    const iconBg = isDown ? "rgba(148,163,184,0.12)" : "rgba(99,102,241,0.15)";
+    const iconBorder = isDown ? "rgba(148,163,184,0.20)" : "rgba(99,102,241,0.30)";
+    const iconColor = isDown ? "#94a3b8" : "var(--primary, #6366f1)";
+    const iconPath = isDown
+      ? "<path d='M18.364 18.364A9 9 0 005.636 5.636m12.728 12.728A9 9 0 015.636 5.636m12.728 12.728L5.636 5.636'/>"
+      : "<path d='M3 12h18M3 6h18M3 18h18'/>";
+    return "<div class='active-card'>" +
+      "<div class='active-card-info'>" +
+        "<div class='stat-icon-wrapper' style='background: " + iconBg + "; border-color: " + iconBorder + "; width: 48px; height: 48px; border-radius: 12px;'>" +
+          "<svg xmlns='http://www.w3.org/2000/svg' class='stat-icon' fill='none' viewBox='0 0 24 24' stroke='currentColor' stroke-width='2.5' style='color: " + iconColor + "; width: 24px; height: 24px;'>" + iconPath + "</svg>" +
         "</div>" +
-        "<div class='egress-body'>" +
-          "<div class='egress-title'>" + escAttr(title) + " <span class='port-num'>端口 " + r.proxy_port + "</span></div>" +
-          "<div class='egress-meta'>" +
-            "<span class='meta-item'><span class='meta-key'>状态</span><span class='meta-val'>" + statusLabel + "</span></span>" +
+        "<div class='active-card-details'>" +
+          "<div class='active-card-title'>" +
+            statusBadge +
+            "<strong>" + escAttr(r.slot_id) + "</strong>" +
+            "<span class='port-num' style='font-family: ui-monospace, \"SF Mono\", Menlo, monospace; font-size: 13px; color: var(--primary, #6366f1); background: rgba(99,102,241,0.08); padding: 2px 8px; border-radius: 6px;'>端口 " + r.proxy_port + "</span>" +
+          "</div>" +
+          "<div class='active-card-meta' style='margin-top: 4px;'>" +
+            "<span>状态: <strong>" + (r.alive ? "已配置 · 运行中" : "已配置 · 未启动") + "</strong></span>" +
+            "<span style='margin-left: 12px;'>可在「代理设置」中选择本出口配置国家 / IP 类型 / 健康度</span>" +
           "</div>" +
         "</div>" +
-        "<div class='egress-actions'>" +
-          "<button class='btn-danger' onclick=\"delEgress('" + escAttr(r.slot_id) + "')\">" +
-            "<svg viewBox='0 0 24 24' fill='none' stroke='currentColor' stroke-width='2'><path d='M3 6h18M8 6V4a2 2 0 012-2h4a2 2 0 012 2v2m3 0v14a2 2 0 01-2 2H7a2 2 0 01-2-2V6h14z'/></svg>" +
-            "删除" +
-          "</button>" +
-        "</div>" +
-      "</div>";
-    }).join("") + "</div>";
-  }
+      "</div>" +
+      "<div>" +
+        "<button class='btn-danger' style='height:36px;padding:0 14px;border-radius:8px;display:inline-flex;align-items:center;gap:6px;' onclick=\"delEgress('" + escAttr(r.slot_id) + "')\">" +
+          "<svg viewBox='0 0 24 24' fill='none' stroke='currentColor' stroke-width='2' style='width:14px;height:14px;'><path d='M3 6h18M8 6V4a2 2 0 012-2h4a2 2 0 012 2v2m3 0v14a2 2 0 01-2 2H7a2 2 0 01-2-2V6h14z'/></svg>" +
+          "删除" +
+        "</button>" +
+      "</div>" +
+    "</div>";
+  }).join("");
   // 底部"常驻"说明区（默认 7928）
   const defaultRow = "<div class='egress-default-row'>" +
     "<span class='dot'></span>" +
@@ -5024,42 +5041,69 @@ async function loadEgressStatus() {
     const data = await fetchWithCsrf("./api/egress_status_all");
     const list = data.egress || [];
     if (!list.length) { box.innerHTML = ""; return; }
-    const heading = "<div style='display:flex;align-items:center;gap:10px;margin:6px 0 12px;'>" +
-      "<span style='font-size:15px;font-weight:600;color:var(--text);'>出站代理状态</span>" +
-      "<span style='font-size:12px;color:var(--text-muted);'>共 " + list.length + " 个出口</span>" +
-    "</div>";
-    const grid = "<div class='egress-grid'>" + list.map(function(e) {
+    // 与"已连接节点"同款 .active-card 横向大卡片（不写标题文字）
+    box.innerHTML = list.map(function(e) {
       const modeMap = {auto:"自动配置",fixed_ip:"固定IP",fixed_region:"固定地区",favorites:"收藏"};
       const ipMap = {all:"所有IP",residential:"住宅IP",hosting:"机房IP"};
       const mode = modeMap[e.routing_mode] || (e.routing_mode || "自动");
-      const country = e.force_country ? ("锁定:" + e.force_country) : "自动";
       const ipType = ipMap[e.routing_ip_type] || (e.routing_ip_type || "所有IP");
       const isDefault = !!e.is_default;
       const isDown = !e.alive;
-      const statusIcon = isDown
-        ? "<svg viewBox='0 0 24 24' fill='none' stroke='currentColor' stroke-width='2'><circle cx='12' cy='12' r='10'/><path d='M9 9l6 6M15 9l-6 6'/></svg>"
-        : (isDefault
-          ? "<svg viewBox='0 0 24 24' fill='none' stroke='currentColor' stroke-width='2'><path d='M5 13l4 4L19 7'/></svg>"
-          : "<svg viewBox='0 0 24 24' fill='none' stroke='currentColor' stroke-width='2'><path d='M3 12h18M3 6h18M3 18h18'/></svg>");
-      const titleText = isDefault ? "默认出口" : e.name;
+      const country = e.force_country ? translateCountry(e.force_country) : "自动";
+      const nodeInfo = e.active_node_id
+        ? (translateCountry("") + " 节点 " + e.active_node_id).trim()
+        : "未连接";
+      // 标题行：徽标 + 节点名
+      const titleLabel = isDefault ? "默认出口" : e.name;
       const port = e.proxy_port || 7928;
-      const metaItems = [
-        "<span class='meta-item'><span class='meta-key'>模式</span><span class='meta-val'>" + escAttr(mode) + "</span></span>",
-        "<span class='meta-item'><span class='meta-key'>国家</span><span class='meta-val'>" + escAttr(country) + "</span></span>",
-        "<span class='meta-item'><span class='meta-key'>类型</span><span class='meta-val'>" + escAttr(ipType) + "</span></span>",
-      ];
-      if (e.active_node_id) metaItems.push("<span class='meta-item'><span class='meta-key'>节点</span><span class='meta-val'>" + escAttr(e.active_node_id) + "</span></span>");
-      else metaItems.push("<span class='meta-item'><span class='meta-key'>节点</span><span class='meta-val'>未连接</span></span>");
-      return "<div class='egress-card" + (isDefault ? " is-default" : "") + (isDown ? " is-down" : "") + "'>" +
-        "<div class='egress-icon'>" + statusIcon + "</div>" +
-        "<div class='egress-body'>" +
-          "<div class='egress-title'>" + escAttr(titleText) + " <span class='port-num'>端口 " + port + "</span></div>" +
-          "<div class='egress-meta'>" + metaItems.join("") + "</div>" +
+      // 左侧图标方块（与 active-card 同款 48px）
+      const iconColor = isDefault ? "#10b981" : (isDown ? "#94a3b8" : "var(--primary, #6366f1)");
+      const iconBg = isDefault ? "rgba(16,185,129,0.15)" : (isDown ? "rgba(148,163,184,0.12)" : "rgba(99,102,241,0.15)");
+      const iconBorder = isDefault ? "rgba(16,185,129,0.30)" : (isDown ? "rgba(148,163,184,0.20)" : "rgba(99,102,241,0.30)");
+      const iconPath = isDown
+        ? "<path d='M18.364 18.364A9 9 0 005.636 5.636m12.728 12.728A9 9 0 015.636 5.636m12.728 12.728L5.636 5.636'/>"
+        : "<path d='M13 10V3L4 14h7v7l9-11h-7z'/>";
+      const statusBadge = isDown
+        ? "<span class='badge' style='background: rgba(148,163,184,0.15); color: #64748b; border-color: rgba(148,163,184,0.3);'>未启动</span>"
+        : (isDefault
+          ? "<span class='badge available'><span class='badge-pulse'></span>已连接</span>"
+          : "<span class='badge available'><span class='badge-pulse'></span>运行中</span>");
+      const actions = isDown
+        ? "<span style='color:var(--text-muted);font-size:13px;'>未启动</span>"
+        : "<button class='btn-danger' style='height:36px;padding:0 14px;border-radius:8px;display:inline-flex;align-items:center;gap:6px;' onclick=\"disconnectEgress('" + escAttr(e.slot_id) + "')\">" +
+          "<svg viewBox='0 0 24 24' fill='none' stroke='currentColor' stroke-width='2' style='width:14px;height:14px;'><path d='M10 14l2-2m0 0l2-2m-2 2l-2-2m2 2l2 2m7-2a9 9 0 11-18 0 9 9 0 0118 0z'/></svg>" +
+          "断开" +
+          "</button>";
+      return "<div class='active-card'>" +
+        "<div class='active-card-info'>" +
+          "<div class='stat-icon-wrapper' style='background: " + iconBg + "; border-color: " + iconBorder + "; width: 48px; height: 48px; border-radius: 12px;'>" +
+            "<svg xmlns='http://www.w3.org/2000/svg' class='stat-icon' fill='none' viewBox='0 0 24 24' stroke='currentColor' stroke-width='2.5' style='color: " + iconColor + "; width: 24px; height: 24px;'>" + iconPath + "</svg>" +
+          "</div>" +
+          "<div class='active-card-details'>" +
+            "<div class='active-card-title'>" +
+              statusBadge +
+              "<strong>" + escAttr(titleLabel) + "</strong>" +
+              "<span class='port-num' style='font-family: ui-monospace, \"SF Mono\", Menlo, monospace; font-size: 13px; color: var(--primary, #6366f1); background: rgba(99,102,241,0.08); padding: 2px 8px; border-radius: 6px;'>端口 " + port + "</span>" +
+            "</div>" +
+            "<div class='active-card-meta' style='margin-top: 4px;'>" +
+              "<span>模式: <strong>" + escAttr(mode) + "</strong></span>" +
+              "<span style='margin-left: 12px;'>国家: <strong>" + escAttr(country) + "</strong></span>" +
+              "<span style='margin-left: 12px;'>类型: <strong>" + escAttr(ipType) + "</strong></span>" +
+              "<span style='margin-left: 12px;'>节点: <strong>" + escAttr(nodeInfo) + "</strong></span>" +
+            "</div>" +
+          "</div>" +
         "</div>" +
+        "<div>" + actions + "</div>" +
       "</div>";
-    }).join("") + "</div>";
-    box.innerHTML = heading + grid;
+    }).join("");
   } catch (e) { box.innerHTML = ""; }
+}
+async function disconnectEgress(slotId) {
+  if (!confirm("确定断开该出站代理？该出口的隧道将停止")) return;
+  const data = await fetchWithCsrf("./api/egress_disconnect", { method: "POST", body: JSON.stringify({ slot_id: slotId }) });
+  if (!data.ok) { alert("断开失败：" + (data.error || "")); return; }
+  if (window.loadEgressStatus) loadEgressStatus();
+  if (window.loadEgress) loadEgress();
 }
 
 function switchPage(name) {
@@ -6919,6 +6963,46 @@ class Handler(BaseHTTPRequestHandler):
                 set_state(active_openvpn_node_id="", last_check_message="手动断开连接", active_node_latency="无活动连接")
                 broadcast_event("node_disconnected", {})
                 self.send_json({"ok": True})
+            except Exception as exc:
+                self.send_json({"ok": False, "error": str(exc)}, HTTPStatus.INTERNAL_SERVER_ERROR)
+        elif effective_path == "/api/egress_disconnect":
+            # 单个出站代理手动断开：默认出口走本地 stop，子出口转发到子进程
+            try:
+                payload = self.read_json_body() or {}
+            except Exception:
+                payload = {}
+            slot_id = str(payload.get("slot_id") or "__default__").strip()
+            try:
+                if slot_id == "__default__":
+                    ui_cfg = _cached_load_ui_config()
+                    ui_cfg["connection_enabled"] = False
+                    auth_file = DATA_DIR / "ui_auth.json"
+                    with lock:
+                        DATA_DIR.mkdir(exist_ok=True, parents=True)
+                        write_json(auth_file, ui_cfg)
+                    stop_active_openvpn()
+                    with lock:
+                        nodes = read_nodes()
+                        for item in nodes:
+                            item["active"] = False
+                        write_json(NODES_FILE, nodes)
+                    # 直接走模块 globals（避免嵌套 try 内 global 声明冲突）
+                    globals()["last_active_ping_time"] = 0.0
+                    globals()["last_active_latency"] = 0
+                    set_state(active_openvpn_node_id="", last_check_message="手动断开连接", active_node_latency="无活动连接")
+                    broadcast_event("node_disconnected", {})
+                    self.send_json({"ok": True})
+                else:
+                    target = None
+                    if EGRESS_ORCH is not None:
+                        for rp in EGRESS_ORCH.regions.values():
+                            if rp.cfg.slot_id == slot_id:
+                                target = rp
+                                break
+                    if target is None:
+                        self.send_json({"ok": False, "error": "出站代理不存在或未启动"}, HTTPStatus.NOT_FOUND)
+                        return
+                    self.send_json(egress_forward(target.ui_port, "/api/disconnect", {}))
             except Exception as exc:
                 self.send_json({"ok": False, "error": str(exc)}, HTTPStatus.INTERNAL_SERVER_ERROR)
         elif effective_path == "/api/egress_status_all":

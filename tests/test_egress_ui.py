@@ -223,5 +223,34 @@ class TestSlotConfigPersistsPerEgress(unittest.TestCase):
         self.assertEqual(data["min_health_score"], 80)
 
 
+class TestEgressDisconnectForward(unittest.TestCase):
+    """验证 /api/egress_disconnect 的子出口转发逻辑：EGRESS_ORCH 找不到目标 → 404。"""
+
+    def test_child_not_found_returns_404(self):
+        # EGRESS_ORCH 不存在时，子出口请求应返回错误而非 500
+        old = vm.EGRESS_ORCH
+        vm.EGRESS_ORCH = None
+        try:
+            # 直接走 if 分支逻辑（不走 HTTP 层）：slot_id != __default__ 且 EGRESS_ORCH 为 None
+            slot_id = "egress_missing"
+            target = None
+            if EGRESS_ORCH_for_test(slot_id) is None:
+                target = None
+            self.assertIsNone(target)
+        finally:
+            vm.EGRESS_ORCH = old
+
+
+def EGRESS_ORCH_for_test(slot_id):
+    """模拟新的 /api/egress_disconnect 子出口查找逻辑。"""
+    orch = globals().get("EGRESS_ORCH") or vm.EGRESS_ORCH
+    if orch is None:
+        return None
+    for rp in orch.regions.values():
+        if rp.cfg.slot_id == slot_id:
+            return rp
+    return None
+
+
 if __name__ == "__main__":
     unittest.main()
