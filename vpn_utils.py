@@ -225,7 +225,7 @@ def get_physical_interface() -> str | None:
                         continue
             if routes:
                 routes.sort(key=lambda x: x[2])
-                for gw, dev, metric in routes:
+                for _gw, dev, _metric in routes:
                     if not dev.startswith(("tun", "tap", "wg", "ppp")):
                         return dev
                 return routes[0][1]
@@ -650,7 +650,7 @@ def diagnose_api_failure(api_url: str = "https://www.vpngate.net/api/iphone/") -
         else:
             return 1009, "[ERR_VPS_OUTBOUND_BLOCKED] VPS 完全断网。原因: 任何外部测试连接均失败（IPv4 和 IPv6 均不可达），请检查 VPS 网卡和宿主机连接。"
 
-    return 1010, f"[ERR_API_TLS_INTERFERENCE] HTTPS/TLS 握手被干扰。原因: 可以建立 TCP 连接但请求超时，通常是由于防火墙通过 SNI 阻断了 TLS 握手流。"
+    return 1010, "[ERR_API_TLS_INTERFERENCE] HTTPS/TLS 握手被干扰。原因: 可以建立 TCP 连接但请求超时，通常是由于防火墙通过 SNI 阻断了 TLS 握手流。"
 
 
 def diagnose_openvpn_failure(log_tail: list[str]) -> tuple[int, str]:
@@ -712,7 +712,7 @@ def diagnose_local_obstructions(proxy_port: int = 7928, host: str = "127.0.0.1")
         if not tun_path.exists():
             return 3009, "[ERR_TUN_DEV_NOT_FOUND] 系统中不存在虚拟网卡设备节点 `/dev/net/tun`。原因: 内核未加载 tun 模块，或宿主机禁用了 TUN 设备创建权限。请尝试运行 `modprobe tun` 加载模块，或在 VPS 控制面板中开启 TUN 支持。"
         try:
-            with open(tun_path, "r+b") as f:
+            with open(tun_path, "r+b") as _f:
                 pass
         except PermissionError:
             return 3010, "[ERR_TUN_PERMISSION_DENIED] 无权访问虚拟网卡设备节点 `/dev/net/tun`。原因: 当前用户对该节点没有读写权限。请确保使用 root 权限运行，或者运行 `chmod 666 /dev/net/tun` 赋予读写权限。"

@@ -7,7 +7,6 @@ import json
 import os
 import queue
 import re
-import select
 import shlex
 import signal
 import socket
@@ -303,7 +302,6 @@ def read_json(path: Path, default: Any) -> Any:
         except (OSError, json.JSONDecodeError):
             return default
 
-import hashlib
 import random
 
 def generate_random_password() -> str:
@@ -388,8 +386,6 @@ def _validate_csrf_token(token: str | None) -> bool:
             return False
         _csrf_tokens[token] = (time.time() + CSRF_TOKEN_EXPIRY, token)
         return True
-    salt = "aimilivpn_secure_salt_2026"
-    return hashlib.sha256((username + ":" + password + salt).encode("utf-8")).hexdigest()
 
 def cleanup_old_logs(logs_dir: Path) -> None:
     global _last_cleanup_time
@@ -830,7 +826,9 @@ def fetch_api_text(url: str | None = None, use_ssl_verify: bool = True) -> str:
 def parse_vpngate_rows(text: str) -> list[dict[str, str]]:
     lines = [line for line in text.splitlines() if line and not line.startswith("*")]
     if lines and lines[0].startswith("#"):
-        lines[0] = lines[0][1:]
+        # Strip the leading '#' AND any whitespace so the first column header
+        # is "HostName", not " HostName" (which would silently drop the field).
+        lines[0] = lines[0].lstrip("#").lstrip()
     return list(csv.DictReader(lines))
 
 def decode_config(encoded: str) -> str:
@@ -1528,7 +1526,7 @@ def test_node_by_id(node_id: str) -> dict[str, Any]:
         CONFIG_DIR.mkdir(exist_ok=True, parents=True)
         temp_path.write_text(config_text, encoding="utf-8")
     except Exception as e:
-        raise RuntimeError(f"Failed to write temp config file: {e}")
+        raise RuntimeError(f"Failed to write temp config file: {e}") from e
 
     latency = vpn_utils.ping_latency_ms(h, p, fallback_ping)
     
@@ -1795,7 +1793,7 @@ def connect_node(node_id: str) -> str:
             CONFIG_DIR.mkdir(exist_ok=True, parents=True)
             config_path.write_text(node.get("config_text") or "", encoding="utf-8")
         except Exception as e:
-            raise RuntimeError(f"Failed to write configuration: {e}")
+            raise RuntimeError(f"Failed to write configuration: {e}") from e
 
         set_state(active_node_latency="启动核心", last_check_message="正在启动 OpenVPN Core 核心服务并建立连接...")
         ok, message, process = run_openvpn_until_ready(str(node["config_file"]), keep_alive=True, route_nopull=True)
@@ -6114,7 +6112,7 @@ class Handler(BaseHTTPRequestHandler):
                     
                     threading.Thread(target=restart_server, daemon=True).start()
                 else:
-                    log_audit("UPDATE_CREDENTIALS", "Auth", f"账号/端口/路径已更新")
+                    log_audit("UPDATE_CREDENTIALS", "Auth", "账号/端口/路径已更新")
                     self.send_json({"ok": True, "restart_needed": False, "reauth_required": reauth_required, "message": "账号密码配置更新成功，已即时生效！"})
             except Exception as exc:
                 self.send_json({"ok": False, "error": str(exc)}, HTTPStatus.INTERNAL_SERVER_ERROR)
@@ -6179,7 +6177,7 @@ class Handler(BaseHTTPRequestHandler):
                     DATA_DIR.mkdir(exist_ok=True, parents=True)
                     write_json(auth_file, ui_cfg)
                 
-                policy_message = enforce_active_node_allowed_by_routing(ui_cfg, "路由设置已更新")
+                enforce_active_node_allowed_by_routing(ui_cfg, "路由设置已更新")
                 
                 restart_needed = (new_proxy_port_int != expected_proxy_port)
                 if restart_needed:
