@@ -93,5 +93,107 @@ class TestAggregateEgress(unittest.TestCase):
         self.assertTrue(child["alive"])
 
 
+class TestGetInstanceEgressStatusExtended(unittest.TestCase):
+    """get_instance_egress_status 必须返回 min_health_score 和 upstream_proxy，
+    否则代理设置弹窗无法回显这两个字段（回归保护）。"""
+
+    def test_includes_min_health_and_upstream(self):
+        ui_cfg = {
+            "proxy_port": 7928,
+            "routing_mode": "fixed_region",
+            "force_country": "Japan",
+            "routing_ip_type": "residential",
+            "min_health_score": 75,
+            "upstream_proxy": {"enabled": True, "type": "socks", "host": "1.2.3.4", "port": 1080, "user": "", "pass": ""},
+        }
+        with mock.patch.object(vm, "_cached_load_ui_config", return_value=ui_cfg), \
+             mock.patch.object(vm, "_quick_proxy_listen", return_value=True), \
+             mock.patch.object(vm, "active_openvpn_node_id", "node_x"):
+            status = vm.get_instance_egress_status()
+        self.assertEqual(status["min_health_score"], 75)
+        self.assertTrue(status["upstream_proxy"]["enabled"])
+        self.assertEqual(status["upstream_proxy"]["host"], "1.2.3.4")
+        self.assertEqual(status["force_country"], "Japan")
+        self.assertEqual(status["routing_ip_type"], "residential")
+
+
+class TestEnsureEgressOrch(unittest.TestCase):
+    """_ensure_egress_orch 在 EGRESS_ORCH 为 None 且 slots 非空时必须按需启动，
+    否则用户在 UI 上首次添加出口后面板永远看不到（回归保护）。"""
+
+    def test_starts_orch_when_none_and_has_slots(self):
+        old = vm.EGRESS_ORCH
+        vm.EGRESS_ORCH = None
+        try:
+            fake_orch = mock.Mock()
+            fake_orch.return_value = fake_orch  # SlotOrchestrator(...) 返回 fake_orch 自身
+            fake_orch.regions = {"egress_1": mock.Mock()}  # 让 len(EGRESS_ORCH.regions) 正常工作
+            with mock.patch("slot_manager.SlotOrchestrator", new=fake_orch), \
+                 mock.patch.object(vm, "_cached_load_ui_config", return_value={}), \
+                 mock.patch.object(vm, "DATA_DIR", Path(tempfile.mkdtemp())):
+                vm._ensure_egress_orch({"slots": [{"slot_id": "egress_1"}]})
+            fake_orch.assert_called_once()
+            fake_orch.sync.assert_called_once()
+            self.assertIs(vm.EGRESS_ORCH, fake_orch)
+        finally:
+            vm.EGRESS_ORCH = old
+
+    def test_skips_when_no_slots(self):
+        old = vm.EGRESS_ORCH
+        vm.EGRESS_ORCH = None
+        try:
+            with mock.patch("slot_manager.SlotOrchestrator") as MockOrch, \
+                 mock.patch.object(vm, "_cached_load_ui_config", return_value={}):
+                vm._ensure_egress_orch({"slots": []})
+            MockOrch.assert_not_called()
+        finally:
+            vm.EGRESS_ORCH = old
+
+    def test_skips_when_orch_alive(self):
+        old = vm.EGRESS_ORCH
+        vm.EGRESS_ORCH = mock.Mock()
+        try:
+            with mock.patch("slot_manager.SlotOrchestrator") as MockOrch:
+                vm._ensure_egress_orch({"slots": [{"slot_id": "x"}]})
+            MockOrch.assert_not_called()
+        finally:
+            vm.EGRESS_ORCH = old
+
+
+class TestSlotConfigPersistsPerEgress(unittest.TestCase):
+    """slots.normalize 必须透传 config 字段，RegionProcess._seed_auth 必须把
+    ui_cfg.slots[i].config 里的路由/国家/IP类型/健康度写入子进程 ui_auth.json，
+    保证子进程重启后仍按该出口独立配置运行。"""
+
+    def test_normalize_passes_config(self):
+        from slots import SlotManager
+        m = SlotManager()
+        cfgs = m.normalize([
+            {"slot_id": "a", "config": {"routing_mode": "fixed_region", "force_country": "JP"}},
+            {"slot_id": "b"},
+        ], default_proxy_port=7928)
+        self.assertEqual(cfgs[0].config, {"routing_mode": "fixed_region", "force_country": "JP"})
+        self.assertEqual(cfgs[1].config, {})
+
+    def test_seed_auth_writes_config_fields_without_region(self):
+        from slot_manager import RegionProcess
+        from slots import SlotConfig
+        base = Path(tempfile.mkdtemp())
+        slot_dir = base / "slot_test"
+        slot_dir.mkdir()
+        cfg = SlotConfig(
+            slot_id="test", region="", enabled=True, proxy_port=7929,
+            config={"routing_mode": "fixed_region", "force_country": "JP",
+                    "routing_ip_type": "residential", "min_health_score": 80},
+        )
+        rp = RegionProcess(cfg, base, ui_port=8890, proxy_port=7929)
+        rp._seed_auth()
+        data = json.loads((slot_dir / "ui_auth.json").read_text())
+        self.assertEqual(data["routing_mode"], "fixed_region")
+        self.assertEqual(data["force_country"], "JP")
+        self.assertEqual(data["routing_ip_type"], "residential")
+        self.assertEqual(data["min_health_score"], 80)
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -74,13 +74,17 @@ class RegionProcess:
         return env
 
     def _seed_auth(self) -> None:
-        """在子进程数据目录中播种初始配置（国家/指定节点）。
+        """在子进程数据目录中播种初始配置（国家/指定节点/独立路由配置）。
 
         子进程是一个完全正常的独立代理实例，国家与节点的后续调整都在它自己的
-        面板里完成（与现在单端口的体验完全一致），这里只写入创建时的初始值。
+        面板里完成（与现在单端口的体验完全一致），这里只写入创建时的初始值以及
+        ``ui_cfg.slots[i].config`` 中持久化的该出口独立配置（路由模式/国家/IP类型/
+        健康度阈值），保证子进程重启后仍按该出口的独立配置运行。
         """
         cfg = self.cfg
-        if not (cfg.region or cfg.fixed_node_id):
+        has_initial = bool(cfg.region or cfg.fixed_node_id)
+        has_config = bool(cfg.config)
+        if not (has_initial or has_config):
             return
         try:
             from vpngate_manager import read_json, write_json
@@ -100,6 +104,12 @@ class RegionProcess:
         if cfg.fixed_node_id:
             data["fixed_node_id"] = cfg.fixed_node_id
             data["routing_mode"] = "fixed_ip"
+        # 播种该出口独立的路由配置（来自 ui_cfg.slots[i].config），
+        # 即使用户在创建时未指定国家/节点，这里也会写入用户在"代理设置"里
+        # 为该出口保存的配置，从而保证子进程重启后仍按该出口配置运行。
+        for k in ("routing_mode", "force_country", "routing_ip_type", "min_health_score"):
+            if k in cfg.config:
+                data[k] = cfg.config[k]
         data.setdefault("connection_enabled", True)
         try:
             write_json(auth, data)

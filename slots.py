@@ -41,6 +41,11 @@ class SlotConfig:
     fwmark: int = -1             # -1 = 自动分配 idx（单 Slot 时为 0 = 不标记，保持现状）
     min_health_score: int = 0
     fixed_node_id: str = ""
+    config: dict[str, Any] = field(default_factory=dict)
+    # ^^^ 该出口独立的路由/国家/IP类型/健康度配置（来自 ui_cfg.slots[i].config）。
+    # 在子进程启动时由 RegionProcess._seed_auth 播种到子进程的 ui_auth.json，
+    # 运行时通过 /api/egress_save_settings 经 egress_forward 下发并写回此处，保证
+    # 子进程重启后仍按该出口的独立配置运行。
 
     def is_single_slot_default(self) -> bool:
         """是否为"单 Slot 现状"配置：fwmark=0 且 tun0 且 table 100。"""
@@ -117,6 +122,7 @@ class SlotManager:
                 fwmark=int(explicit_fwmark) if explicit_fwmark >= 0 else idx,
                 min_health_score=int(raw.get("min_health_score") or 0),
                 fixed_node_id=str(raw.get("fixed_node_id") or ""),
+                config=dict(raw.get("config") or {}),
             )
             configs.append(cfg)
 

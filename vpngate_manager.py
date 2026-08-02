@@ -3562,7 +3562,7 @@ INDEX_HTML = r"""<!doctype html>
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 15v2m-6 4h12a2 2 0 002-2v-6a2 2 0 00-2-2H6a2 2 0 00-2 2v6a2 2 0 002 2zm10-10V7a4 4 0 00-8 0v4h8z"/></svg>
             网页安全
           </a>
-          <a class="nav-item sub-item" href="javascript:void(0)" onclick="event.stopPropagation(); switchPage('settings');">
+          <a class="nav-item sub-item" href="javascript:void(0)" onclick="event.stopPropagation(); openNetworkModal();">
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 00.33 1.82l.06.06a2 2 0 010 2.83 2 2 0 01-2.83 0l-.06-.06a1.65 1.65 0 00-1.82-.33 1.65 1.65 0 00-1 1.51V21a2 2 0 01-2 2 2 2 0 01-2-2v-.09A1.65 1.65 0 009 19.4a1.65 1.65 0 00-1.82.33l-.06.06a2 2 0 01-2.83 0 2 2 0 010-2.83l.06-.06A1.65 1.65 0 004.68 15a1.65 1.65 0 00-1.51-1H3a2 2 0 01-2-2 2 2 0 012-2h.09A1.65 1.65 0 004.6 9a1.65 1.65 0 00-.33-1.82l-.06-.06a2 2 0 010-2.83 2 2 0 012.83 0l.06.06A1.65 1.65 0 009 4.68a1.65 1.65 0 001-1.51V3a2 2 0 012-2 2 2 0 012 2v.09a1.65 1.65 0 001 1.51 1.65 1.65 0 001.82-.33l.06-.06a2 2 0 012.83 0 2 2 0 010 2.83l-.06.06a1.65 1.65 0 00-.33 1.82V9a1.65 1.65 0 001.51 1H21a2 2 0 012 2 2 2 0 01-2 2h-.09a1.65 1.65 0 00-1.51 1z"/></svg>
             代理设置
           </a>
@@ -3827,6 +3827,13 @@ INDEX_HTML = r"""<!doctype html>
       <div id="network_success" style="color: var(--success); font-size: 13px; margin-bottom: 16px; padding: 8px 12px; background: rgba(16,185,129,0.1); border: 1px solid rgba(16,185,129,0.2); border-radius: 6px; display: none;"></div>
 
       <form id="network_form" onsubmit="saveNetwork(event)">
+          <div class="form-group" style="margin-bottom: 16px;">
+            <label class="form-label" for="net_egress">配置出口（每个出口独立保存）</label>
+            <select id="net_egress" class="input-field" onchange="setNetEgress()" style="background: var(--surface-2); border: 1px solid var(--border-color); color: var(--text-primary); outline: none; cursor: pointer; width: 100%; height: 40px; border-radius: 8px; padding: 0 12px;">
+              <option value="__default__">默认出口（7928）</option>
+            </select>
+            <p class="form-hint" style="font-size: 11px; color: var(--text-muted); margin-top: 6px; line-height: 1.4;">下方"上游代理"为全局（所有出口共用节点池）；路由/国家/IP类型/健康度逐出口独立保存。</p>
+          </div>
           <div class="form-group" style="margin-bottom: 16px; display:none;">
             <label class="form-label" for="net_proxy_port">HTTP/SOCKS5 代理出站端口</label>
             <input type="number" id="net_proxy_port" class="input-field" required min="1024" max="65535" placeholder="7928">
@@ -4851,6 +4858,9 @@ function toggleSettingsSubmenu() {
 let egressRegions = [];
 let egressCurrent = null;
 async function loadEgress() {
+  // 默认先渲染默认出口卡片，确保即使 API 暂时不可用（如 CSRF 未就绪）
+  // 用户也能看到默认的 7928 出口；之后再用最新状态刷新列表。
+  renderEgress();
   try {
     const resp = await fetchWithCsrf("./api/egress_regions");
     const data = await resp.json();
@@ -4889,59 +4899,6 @@ async function delEgress(slotId) {
   if (window.loadEgressStatus) loadEgressStatus();
 }
 
-let settingsEgressList = [];
-async function loadSettings() {
-  try {
-    const resp = await fetchWithCsrf("./api/egress_status_all");
-    const data = await resp.json();
-    settingsEgressList = (data.egress || []);
-  } catch (e) { settingsEgressList = []; }
-  const sel = $("settings_egress");
-  if (sel) {
-    sel.innerHTML = settingsEgressList.map(function(e) {
-      return "<option value='" + e.slot_id + "'>" + (e.is_default ? "默认出口 (7928)" : (e.name + " (" + e.proxy_port + ")")) + "</option>";
-    }).join("");
-  }
-  try {
-    const nresp = await fetchWithCsrf("./api/nodes");
-    const ndata = await nresp.json();
-    const countries = [];
-    (ndata.nodes || []).forEach(function(n) { if (n.country && countries.indexOf(n.country) < 0) countries.push(n.country); });
-    const fc = $("set_force_country");
-    if (fc) fc.innerHTML = "<option value=''>不锁定（自动选最快）</option>" + countries.map(function(c) { return "<option value='" + c + "'>" + c + "</option>"; }).join("");
-  } catch (e) {}
-  onSettingsEgressChange();
-}
-function onSettingsEgressChange() {
-  const sel = $("settings_egress");
-  const slot = sel ? sel.value : "__default__";
-  const e = settingsEgressList.find(function(x) { return x.slot_id === slot; }) || {};
-  setSettingsRoutingMode(e.routing_mode || "auto", true);
-  setSettingsIpType(e.routing_ip_type || "all", true);
-  const fc = $("set_force_country");
-  if (fc) fc.value = e.force_country || "";
-  const grp = $("set_force_country_group");
-  if (grp) grp.style.display = (e.routing_mode === "fixed_region") ? "block" : "none";
-}
-function setSettingsRoutingMode(v, skip) {
-  const inp = $("set_routing_mode"); if (inp) inp.value = v;
-  document.querySelectorAll("#set_routing_mode_group .option-card").forEach(function(c) { c.classList.toggle("active", c.getAttribute("data-value") === v); });
-  const grp = $("set_force_country_group"); if (grp) grp.style.display = (v === "fixed_region") ? "block" : "none";
-}
-function setSettingsIpType(v, skip) {
-  const inp = $("set_routing_ip_type"); if (inp) inp.value = v;
-  document.querySelectorAll("#set_routing_ip_type_group .option-card").forEach(function(c) { c.classList.toggle("active", c.getAttribute("data-value") === v); });
-}
-async function saveSettingsRouting() {
-  const sel = $("settings_egress");
-  const slot = sel ? sel.value : "__default__";
-  const payload = { slot_id: slot, routing_mode: $("set_routing_mode").value, force_country: $("set_force_country").value, routing_ip_type: $("set_routing_ip_type").value, min_health_score: 0 };
-  const resp = await fetchWithCsrf("./api/egress_update_routing", { method: "POST", body: JSON.stringify(payload) });
-  const data = await resp.json();
-  if (data.ok) { alert("已保存：" + (data.message || "配置更新成功")); if (window.loadEgressStatus) loadEgressStatus(); }
-  else alert("保存失败：" + (data.error || ""));
-}
-
 async function loadEgressStatus() {
   const box = $("egress_status_blocks");
   if (!box) return;
@@ -4971,7 +4928,6 @@ function switchPage(name) {
   if (nav) nav.classList.add("active");
   localStorage.setItem("vpngate_page", name);
   if (name === "egress") loadEgress();
-  else if (name === "settings") loadSettings();
   else if (name === "overview") loadEgressStatus();
 }
 
@@ -5295,33 +5251,89 @@ function closeCredentialsModal() {
   $("credentials_modal").style.display = "none";
 }
 
-function openNetworkModal() {
+let netEgressList = [];
+async function openNetworkModal() {
   $("network_error").style.display = "none";
   $("network_success").style.display = "none";
   $("network_form").reset();
-  if (state) {
-    $("net_proxy_port").value = state.proxy_port || 7928;
-    $("net_routing_mode").value = state.routing_mode || "auto";
-    $("net_force_country").value = state.force_country || "";
-    $("net_routing_ip_type").value = state.routing_ip_type || "all";
-    const mhs = state.min_health_score || 0;
-    $("net_min_health").value = mhs;
-    $("health_score_label").textContent = mhs > 0 ? "≥ " + mhs + " 分" : "不限";
-    
-    const up = state.upstream_proxy || {};
-    $("net_upstream_enabled").checked = !!up.enabled;
-    if (up.enabled) {
-      $("net_upstream_type").value = up.type || "socks";
-      setUpstreamType(up.type || "socks");
-      $("net_upstream_host").value = up.host || "";
-      $("net_upstream_port").value = up.port || 0;
-      $("net_upstream_user").value = up.user || "";
-      $("net_upstream_pass").value = up.pass || "";
-    }
-    handleRoutingModeChange(state.routing_mode || "auto");
-    setRoutingIpType(state.routing_ip_type || "all");
+
+  // 1) 加载出口列表（默认 7928 + 各子出口）
+  try {
+    const resp = await fetchWithCsrf("./api/egress_status_all");
+    const data = await resp.json();
+    netEgressList = (data.egress || []);
+  } catch (e) { netEgressList = []; }
+  const sel = $("net_egress");
+  if (sel) {
+    sel.innerHTML = netEgressList.map(function(e) {
+      const label = e.is_default
+        ? "默认出口（" + (e.proxy_port || 7928) + "）"
+        : (e.name + "（端口 " + e.proxy_port + "）");
+      return "<option value='" + e.slot_id + "'>" + label + "</option>";
+    }).join("");
   }
+
+  // 2) 加载国家列表（用于"锁定国家地区"下拉）
+  try {
+    const nresp = await fetchWithCsrf("./api/nodes");
+    const ndata = await nresp.json();
+    const countries = [];
+    (ndata.nodes || []).forEach(function(n) { if (n.country && countries.indexOf(n.country) < 0) countries.push(n.country); });
+    const fc = $("net_force_country");
+    if (fc) fc.innerHTML = "<option value=''>不锁定（自动选最快）</option>" + countries.map(function(c) { return "<option value='" + c + "'>" + c + "</option>"; }).join("");
+  } catch (e) {}
+
+  // 3) 默认选中默认出口，并按所选出口填充下方字段
+  if (sel) sel.value = "__default__";
+  setNetEgress();
+
   $("network_modal").style.display = "flex";
+}
+
+function setNetEgress() {
+  const sel = $("net_egress");
+  const slotId = sel ? sel.value : "__default__";
+  const e = netEgressList.find(function(x) { return x.slot_id === slotId; }) || {};
+
+  // 路由模式
+  const rm = e.routing_mode || "auto";
+  $("net_routing_mode").value = rm;
+  document.querySelectorAll("#routing_mode_group .option-card").forEach(function(c) {
+    c.classList.toggle("active", c.getAttribute("data-value") === rm);
+  });
+  handleRoutingModeChange(rm);
+
+  // 锁定国家
+  const fcEl = $("net_force_country");
+  if (fcEl) fcEl.value = e.force_country || "";
+
+  // IP 类型
+  const ip = e.routing_ip_type || "all";
+  $("net_routing_ip_type").value = ip;
+  setRoutingIpType(ip);
+
+  // 健康度阈值
+  const mhs = e.min_health_score || 0;
+  const mhEl = $("net_min_health");
+  if (mhEl) mhEl.value = mhs;
+  const lbl = $("health_score_label");
+  if (lbl) lbl.textContent = mhs > 0 ? "≥ " + mhs + " 分" : "不限";
+
+  // 上游代理（全局，所有出口共用节点池，故从 state 读取）
+  const up = (state && state.upstream_proxy) || {};
+  $("net_upstream_enabled").checked = !!up.enabled;
+  toggleUpstreamFields();
+  if (up.enabled) {
+    $("net_upstream_type").value = up.type || "socks";
+    setUpstreamType(up.type || "socks");
+    $("net_upstream_host").value = up.host || "";
+    $("net_upstream_port").value = up.port || 0;
+    $("net_upstream_user").value = up.user || "";
+    $("net_upstream_pass").value = up.pass || "";
+  }
+
+  // 端口（仅展示，不可改）
+  $("net_proxy_port").value = e.proxy_port || 7928;
 }
 
 function closeNetworkModal() {
@@ -5432,23 +5444,23 @@ async function saveNetwork(e) {
   const errorDivEl = $("network_error");
   const successDiv = $("network_success");
   const submitBtn = $("network_submit_btn");
-  
+
   errorDivEl.style.display = "none";
   successDiv.style.display = "none";
-  
-  const proxyPort = parseInt($("net_proxy_port").value);
+
+  const slotId = ($("net_egress") && $("net_egress").value) || "__default__";
   const routingMode = $("net_routing_mode").value;
   const forceCountry = $("net_force_country").value;
   const routingIpType = $("net_routing_ip_type").value;
   const minHealthScore = parseInt($("net_min_health").value) || 0;
-  
+
   const upstreamEnabled = $("net_upstream_enabled").checked;
   const upstreamType = $("net_upstream_type").value;
   const upstreamHost = ($("net_upstream_host").value || "").trim();
   const upstreamPort = parseInt($("net_upstream_port").value) || 0;
   const upstreamUser = ($("net_upstream_user").value || "").trim();
   const upstreamPass = ($("net_upstream_pass").value || "").trim();
-  
+
   if (upstreamEnabled) {
     if (!upstreamHost) {
       errorDivEl.textContent = "请输入上游代理地址";
@@ -5461,34 +5473,22 @@ async function saveNetwork(e) {
       return;
     }
   }
-  
-  if (isNaN(proxyPort) || proxyPort < 1024 || proxyPort > 65535) {
-    errorDivEl.textContent = "代理出站端口范围必须在 1024 至 65535 之间";
-    errorDivEl.style.display = "block";
-    return;
-  }
 
-  if (state && proxyPort === state.port) {
-    errorDivEl.textContent = "代理出站端口不能与网页管理端口相同";
-    errorDivEl.style.display = "block";
-    return;
-  }
-  
   if (routingMode === "fixed_region" && !forceCountry) {
     errorDivEl.textContent = "请选择一个要锁定的目标国家";
     errorDivEl.style.display = "block";
     return;
   }
-  
+
   submitBtn.disabled = true;
   submitBtn.textContent = "正在保存...";
-  
+
   try {
-    const res = await fetchWithCsrf("./api/update_settings", {
+    const res = await fetchWithCsrf("./api/egress_save_settings", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
-        proxy_port: proxyPort,
+        slot_id: slotId,
         routing_mode: routingMode,
         force_country: forceCountry,
         routing_ip_type: routingIpType,
@@ -5503,36 +5503,26 @@ async function saveNetwork(e) {
         } : { enabled: false }
       })
     });
-    
-    if (res.ok) {
-      if (res.restart_needed) {
-        successDiv.textContent = "保存成功！代理出站端口已变更，页面将在 4 秒内自动刷新...";
-        successDiv.style.display = "block";
-        
-        const inputs = $("network_form").querySelectorAll("input, button");
-        inputs.forEach(el => el.disabled = true);
-        
-        setTimeout(() => {
-          window.location.reload();
-        }, 4000);
-      } else {
-        successDiv.textContent = "配置保存成功，已即时生效！";
-        successDiv.style.display = "block";
-        submitBtn.disabled = false;
-        submitBtn.textContent = "保存修改";
-        setTimeout(() => {
-          closeNetworkModal();
-          load();
-        }, 1500);
-      }
+
+    if (res && res.ok) {
+      successDiv.textContent = (res.message || "配置保存成功") + "，已即时生效！";
+      successDiv.style.display = "block";
+      submitBtn.disabled = false;
+      submitBtn.textContent = "保存修改";
+      setTimeout(() => {
+        closeNetworkModal();
+        if (typeof load === "function") load();
+        if (typeof loadEgressStatus === "function") loadEgressStatus();
+        if (typeof loadEgress === "function") loadEgress();
+      }, 1200);
     } else {
-      errorDivEl.textContent = res.error || "保存失败，请检查输入";
+      errorDivEl.textContent = (res && res.error) || "保存失败，请检查输入";
       errorDivEl.style.display = "block";
       submitBtn.disabled = false;
       submitBtn.textContent = "保存修改";
     }
   } catch (err) {
-    errorDivEl.textContent = err.message || "连接服务器失败，请稍后重试";
+    errorDivEl.textContent = (err && err.message) || "连接服务器失败，请稍后重试";
     errorDivEl.style.display = "block";
     submitBtn.disabled = false;
     submitBtn.textContent = "保存修改";
@@ -5772,46 +5762,6 @@ URL.revokeObjectURL(url);
         <button onclick="loadEgress()" style="padding:8px 16px;border:1px solid var(--border,#e5e7eb);border-radius:8px;background:var(--bg-input,#fff);color:var(--text-primary);cursor:pointer;">刷新状态</button>
       </div>
       <div id="egress_list" style="display:flex;gap:12px;flex-wrap:wrap;"></div>
-    </section>
-  </div>
-
-  <div id="page_settings" class="page-content" style="display:none;">
-    <section class="toolbar" style="padding:20px;">
-      <h2 style="margin:0 0 8px;font-size:20px;">代理设置</h2>
-      <p style="color:var(--text-secondary);margin:0 0 16px;line-height:1.6;">先选择要配置的<span style="color:var(--accent,#6366f1);font-weight:600;">出站代理</span>，下面的国家 / IP 类型 / 住宅 等设置与原先完全一致，各自独立、互不影响。</p>
-      <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center;margin-bottom:20px;">
-        <label style="font-size:14px;color:var(--text-primary);">配置出口：</label>
-        <select id="settings_egress" onchange="onSettingsEgressChange()" style="padding:8px 10px;border:1px solid var(--border,#e5e7eb);border-radius:8px;min-width:220px;background:var(--bg-input,#fff);color:var(--text-primary);"></select>
-      </div>
-      <div style="border-top:1px dashed var(--border); padding-top:16px;">
-        <div class="form-group" style="margin-bottom:16px;">
-          <label class="form-label">IP 出站路由模式</label>
-          <input type="hidden" id="set_routing_mode" value="auto">
-          <div class="option-group" id="set_routing_mode_group">
-            <div class="option-card active" data-value="auto" onclick="setSettingsRoutingMode('auto')"><div class="option-card-title">自动配置</div><div class="option-card-desc">智能切换，最稳定</div></div>
-            <div class="option-card" data-value="fixed_ip" onclick="setSettingsRoutingMode('fixed_ip')"><div class="option-card-title">固定 IP</div><div class="option-card-desc">锁定IP，不自动切换</div></div>
-            <div class="option-card" data-value="fixed_region" onclick="setSettingsRoutingMode('fixed_region')"><div class="option-card-title">固定地区</div><div class="option-card-desc">锁定特定国家地区</div></div>
-          </div>
-        </div>
-        <div id="set_force_country_group" class="form-group" style="margin-bottom:16px; display:none;">
-          <label class="form-label" for="set_force_country">锁定国家地区</label>
-          <select id="set_force_country" class="input-field" style="background:var(--surface-2);border:1px solid var(--border-color);color:var(--text-primary);outline:none;cursor:pointer;width:100%;height:40px;border-radius:8px;padding:0 12px;">
-            <option value="">不锁定（自动选最快）</option>
-          </select>
-        </div>
-        <div class="form-group" style="margin-bottom:16px;">
-          <label class="form-label">IP 出站类型过滤</label>
-          <input type="hidden" id="set_routing_ip_type" value="all">
-          <div class="option-group" id="set_routing_ip_type_group">
-            <div class="option-card active" data-value="all" onclick="setSettingsIpType('all')"><div class="option-card-title">所有IP</div><div class="option-card-desc">机房 + 住宅</div></div>
-            <div class="option-card" data-value="residential" onclick="setSettingsIpType('residential')"><div class="option-card-title">住宅IP</div><div class="option-card-desc">静态家宽</div></div>
-            <div class="option-card" data-value="hosting" onclick="setSettingsIpType('hosting')"><div class="option-card-title">机房IP</div><div class="option-card-desc">普通机房</div></div>
-          </div>
-        </div>
-        <div style="display:flex;gap:12px;justify-content:flex-end;">
-          <button onclick="saveSettingsRouting()" class="btn-primary" style="height:40px;padding:0 20px;font-weight:600;border-radius:8px;">保存修改</button>
-        </div>
-      </div>
     </section>
   </div>
 
@@ -6752,6 +6702,9 @@ class Handler(BaseHTTPRequestHandler):
                     DATA_DIR.mkdir(exist_ok=True, parents=True)
                     write_json(auth_file, ui_cfg)
                 _config_cache = None
+                # 若首次添加出口（EGRESS_ORCH 尚未启动），按需拉起编排器，
+                # 否则后续 GET /api/egress_regions 永远返回空、新增的出口不会出现在面板。
+                _ensure_egress_orch(ui_cfg)
                 if EGRESS_ORCH is not None:
                     EGRESS_ORCH.sync(ui_cfg)
                 regions = EGRESS_ORCH.status() if EGRESS_ORCH else []
@@ -6775,6 +6728,9 @@ class Handler(BaseHTTPRequestHandler):
                     DATA_DIR.mkdir(exist_ok=True, parents=True)
                     write_json(auth_file, ui_cfg)
                 _config_cache = None
+                # 若首次添加出口（EGRESS_ORCH 尚未启动），按需拉起编排器，
+                # 否则后续 GET /api/egress_regions 永远返回空、新增的出口不会出现在面板。
+                _ensure_egress_orch(ui_cfg)
                 if EGRESS_ORCH is not None:
                     EGRESS_ORCH.sync(ui_cfg)
                 regions = EGRESS_ORCH.status() if EGRESS_ORCH else []
@@ -6846,6 +6802,83 @@ class Handler(BaseHTTPRequestHandler):
                         "routing_ip_type": routing_ip_type,
                         "min_health_score": min_health_score,
                     }))
+            except Exception as exc:
+                self.send_json({"ok": False, "error": str(exc)}, HTTPStatus.INTERNAL_SERVER_ERROR)
+        elif effective_path == "/api/egress_save_settings":
+            # 代理设置弹窗保存：上游代理（全局）+ 当前所选出口的路由/国家/IP类型/健康度。
+            # 默认出口 → 写到 ui_cfg 顶层；子出口 → 写到 ui_cfg.slots[i].config
+            # 并经 egress_forward 下发到子进程（子进程重启后由 _seed_auth 重新播种）。
+            try:
+                payload = self.read_json_body()
+                slot_id = str(payload.get("slot_id") or "__default__").strip()
+                routing_mode = str(payload.get("routing_mode") or "auto").strip()
+                force_country = str(payload.get("force_country") or "").strip()
+                routing_ip_type = str(payload.get("routing_ip_type") or "all").strip()
+                min_health_score = int(payload.get("min_health_score", 0) or 0)
+                upstream_proxy = payload.get("upstream_proxy")
+                if not isinstance(upstream_proxy, dict):
+                    upstream_proxy = {"enabled": False}
+                if routing_mode not in ("auto", "fixed_ip", "fixed_region", "favorites"):
+                    self.send_json({"ok": False, "error": "无效的路由配置模式"}); return
+                if routing_ip_type not in ("all", "residential", "hosting"):
+                    self.send_json({"ok": False, "error": "无效的IP出站类型过滤"}); return
+                if routing_mode == "fixed_region" and not force_country:
+                    self.send_json({"ok": False, "error": "请选择一个要锁定的目标国家"}); return
+                if upstream_proxy.get("enabled"):
+                    if not str(upstream_proxy.get("host") or "").strip():
+                        self.send_json({"ok": False, "error": "请输入上游代理地址"}); return
+                    up_port = int(upstream_proxy.get("port") or 0)
+                    if up_port < 1 or up_port > 65535:
+                        self.send_json({"ok": False, "error": "上游代理端口范围必须在 1 至 65535 之间"}); return
+
+                ui_cfg = _cached_load_ui_config()
+                # 上游代理是全局配置（节点池只由父进程拉取一次，所有出口共用）
+                ui_cfg["upstream_proxy"] = upstream_proxy
+                if slot_id in ("", "__default__"):
+                    ui_cfg["routing_mode"] = routing_mode
+                    ui_cfg["force_country"] = force_country
+                    ui_cfg["routing_ip_type"] = routing_ip_type
+                    ui_cfg["min_health_score"] = min_health_score
+                    ui_cfg.pop("enable_force_country", None)
+                    with lock:
+                        DATA_DIR.mkdir(exist_ok=True, parents=True)
+                        write_json(DATA_DIR / "ui_auth.json", ui_cfg)
+                    _config_cache = None
+                    enforce_active_node_allowed_by_routing(ui_cfg, "代理设置已更新")
+                    self.send_json({"ok": True, "message": "默认出口配置已更新，已即时生效！"})
+                else:
+                    orch = globals().get("EGRESS_ORCH")
+                    target = orch.regions.get(slot_id) if orch is not None else None
+                    if target is None:
+                        self.send_json({"ok": False, "error": "未找到该出口，请刷新后重试"}); return
+                    # 1) 立即下发到子进程（运行时生效）
+                    fwd_result = egress_forward(target.ui_port, "/api/update_routing", {
+                        "routing_mode": routing_mode,
+                        "force_country": force_country,
+                        "routing_ip_type": routing_ip_type,
+                        "min_health_score": min_health_score,
+                    })
+                    # 2) 持久化到父配置 ui_cfg.slots[i].config（子进程重启后由 _seed_auth 重新播种）
+                    slots = list(ui_cfg.get("slots") or [])
+                    for s in slots:
+                        if str(s.get("slot_id")) == slot_id:
+                            cfg = dict(s.get("config") or {})
+                            cfg["routing_mode"] = routing_mode
+                            cfg["force_country"] = force_country
+                            cfg["routing_ip_type"] = routing_ip_type
+                            cfg["min_health_score"] = min_health_score
+                            s["config"] = cfg
+                            break
+                    ui_cfg["slots"] = slots
+                    with lock:
+                        DATA_DIR.mkdir(exist_ok=True, parents=True)
+                        write_json(DATA_DIR / "ui_auth.json", ui_cfg)
+                    _config_cache = None
+                    # 3) 刷新父侧缓存（slot_manager 下次 sync 时会用新 config 重启子进程 / 重新播种）
+                    _ensure_egress_orch(ui_cfg)
+                    if EGRESS_ORCH is not None:
+                        EGRESS_ORCH.sync(ui_cfg)
+                    self.send_json({"ok": True, "message": f"出口 {slot_id} 配置已更新，已即时生效！", "forwarded": fwd_result})
             except Exception as exc:
                 self.send_json({"ok": False, "error": str(exc)}, HTTPStatus.INTERNAL_SERVER_ERROR)
         elif effective_path == "/api/connect":
@@ -6945,6 +6978,8 @@ def get_instance_egress_status() -> dict[str, Any]:
         "routing_mode": ui_cfg.get("routing_mode", "auto"),
         "force_country": ui_cfg.get("force_country", ""),
         "routing_ip_type": ui_cfg.get("routing_ip_type", "all"),
+        "min_health_score": int(ui_cfg.get("min_health_score", 0) or 0),
+        "upstream_proxy": ui_cfg.get("upstream_proxy", {"enabled": False}),
     }
 
 
@@ -6995,6 +7030,32 @@ def aggregate_egress_status() -> list[dict[str, Any]]:
                 pass
             result.append(entry)
     return result
+
+
+def _ensure_egress_orch(ui_cfg: dict[str, Any]) -> None:
+    """按需拉起多出口编排器（仅当首次添加出口、EGRESS_ORCH 尚未启动时）。
+
+    主进程在启动时如果 ui_cfg.slots 为空就不会初始化编排器；用户在 UI 上
+    首次添加出口时，需要在这里补启动，否则 GET /api/egress_regions 永远返回
+    空列表、新增的出口也无法在面板里出现。子进程（VPNGATE_SLOT_CHILD=1）跳过。
+    """
+    global EGRESS_ORCH
+    if EGRESS_ORCH is not None:
+        return
+    if not ui_cfg.get("slots"):
+        return
+    if os.environ.get("VPNGATE_SLOT_CHILD") == "1":
+        return
+    try:
+        from slot_manager import SlotOrchestrator
+        cfg = _cached_load_ui_config()
+        ui_port = bounded_int(cfg.get("port"), UI_PORT, 1, 65535)
+        EGRESS_ORCH = SlotOrchestrator(DATA_DIR, ui_port, LOCAL_PROXY_PORT)
+        EGRESS_ORCH.sync(ui_cfg)
+        log_to_json("INFO", "Egress", f"多出口编排已按需启动，共 {len(EGRESS_ORCH.regions)} 个子出口")
+    except Exception as exc:
+        EGRESS_ORCH = None
+        log_to_json("ERROR", "Egress", f"多出口编排按需启动失败: {exc}")
 
 
 def main() -> None:
