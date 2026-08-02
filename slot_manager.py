@@ -65,6 +65,8 @@ class RegionProcess:
         # 子进程由 director 在本地面板内编排：免登录且只绑本地回环，不外泄
         env["VPNGATE_DISABLE_AUTH"] = "1"
         env["UI_HOST"] = "127.0.0.1"
+        # 标记为"地区子进程"，避免其再次拉起编排器（递归）
+        env["VPNGATE_SLOT_CHILD"] = "1"
         return env
 
     def start(self) -> None:

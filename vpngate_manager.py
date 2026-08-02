@@ -162,6 +162,9 @@ last_checker_heartbeat = 0.0
 last_pinger_heartbeat = 0.0
 server_start_time = time.time()
 
+# 多地区编排器实例（由 main() 在配置了 slots 时创建，供 Web API 查询/管理各地区子进程）
+EGRESS_ORCH: Any | None = None
+
 _nodes_cache: list[dict[str, Any]] | None = None
 _nodes_cache_time = 0.0
 _NODES_CACHE_TTL = NODE_CACHE_TTL
@@ -3417,6 +3420,10 @@ INDEX_HTML = r"""<!doctype html>
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M23 4v6h-6"/><path d="M1 20v-6h6"/><path d="M3.51 9a9 9 0 0114.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0020.49 15"/></svg>
         更新节点
       </a>
+      <a class="nav-item" id="nav_egress" href="javascript:void(0)" onclick="switchPage('egress')">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 12h18M3 6h18M3 18h18"/><circle cx="12" cy="12" r="9"/></svg>
+        多地区出口
+      </a>
 
       <div class="sidebar-divider"></div>
 
@@ -4715,6 +4722,66 @@ function toggleSettingsSubmenu() {
   }
 }
 
+let egressRegions = [];
+let egressCurrent = null;
+async function loadEgress() {
+  try {
+    const resp = await fetchWithCsrf("./api/egress_regions");
+    const data = await resp.json();
+    egressRegions = data.regions || [];
+    renderEgress();
+  } catch (e) { console.error(e); }
+}
+function renderEgress() {
+  const tabs = $("egress_tabs");
+  const list = $("egress_list");
+  const frame = $("egress_frame");
+  if (!egressRegions.length) {
+    if (tabs) tabs.innerHTML = "";
+    if (list) list.innerHTML = "<div style='padding:24px;color:var(--text-secondary);'>尚未配置任何地区。请在上方添加，每个地区将获得一条独立隧道，地区之间互不影响。</div>";
+    if (frame) frame.src = "about:blank";
+    return;
+  }
+  if (tabs) tabs.innerHTML = egressRegions.map(function(r, i) {
+    const status = r.alive ? "🟢" : "🔴";
+    const label = r.region || r.slot_id;
+    return "<button class='egress-tab" + (i === 0 ? " active" : "") + "' id='etab_" + r.slot_id + "' onclick=\"selectEgress('" + r.slot_id + "')\">" + label + " " + status + " <span class='egress-x' onclick=\"event.stopPropagation();delEgress('" + r.slot_id + "')\">×</span></button>";
+  }).join("");
+  if (list) list.innerHTML = egressRegions.map(function(r) {
+    const status = r.alive ? "🟢 运行中" : "🔴 已停止";
+    return "<div class='egress-card'><div class='egress-card-title'>" + (r.region || r.slot_id) + "</div><div class='egress-card-meta'>状态：" + status + " ｜ tun：" + r.tun_dev + " ｜ 代理端口：" + r.proxy_port + "</div></div>";
+  }).join("");
+  selectEgress(egressRegions[0].slot_id, true);
+}
+function selectEgress(slotId, skipRender) {
+  egressCurrent = slotId;
+  var tabs = document.querySelectorAll(".egress-tab");
+  tabs.forEach(function(t) { t.classList.remove("active"); });
+  var tab = $("etab_" + slotId);
+  if (tab) tab.classList.add("active");
+  var r = egressRegions.find(function(x) { return x.slot_id === slotId; });
+  var frame = $("egress_frame");
+  if (r && r.panel_url && frame) frame.src = r.panel_url;
+}
+async function addEgress() {
+  const region = $("egress_region").value.trim();
+  if (!region) { alert("请填写地区/国家名（如 Japan / United States）"); return; }
+  const slotId = $("egress_slotid").value.trim();
+  const resp = await fetchWithCsrf("./api/egress_regions", { method: "POST", body: JSON.stringify({ region: region, slot_id: slotId }) });
+  const data = await resp.json();
+  if (!data.ok) { alert("添加失败：" + (data.error || "")); return; }
+  egressRegions = data.regions || [];
+  renderEgress();
+}
+async function delEgress(slotId) {
+  if (!confirm("确定删除地区 " + slotId + "？将停止其隧道并释放资源")) return;
+  const resp = await fetchWithCsrf("./api/egress_regions/delete", { method: "POST", body: JSON.stringify({ slot_id: slotId }) });
+  const data = await resp.json();
+  if (!data.ok) { alert("删除失败：" + (data.error || "")); return; }
+  egressRegions = data.regions || [];
+  renderEgress();
+}
+
 function switchPage(name) {
   document.querySelectorAll(".page-content").forEach(function(p) { p.style.display = "none"; });
   document.querySelectorAll(".nav-item").forEach(function(n) { n.classList.remove("active"); });
@@ -4723,6 +4790,7 @@ function switchPage(name) {
   var nav = document.getElementById("nav_" + name);
   if (nav) nav.classList.add("active");
   localStorage.setItem("vpngate_page", name);
+  if (name === "egress") loadEgress();
 }
 
 async function doRefreshNodes(){ 
@@ -5512,6 +5580,23 @@ URL.revokeObjectURL(url);
 })();
 
 </script>
+
+  <div id="page_egress" class="page-content" style="display:none;">
+    <section class="toolbar" style="padding:20px;">
+      <h2 style="margin:0 0 8px;font-size:20px;">多地区出口</h2>
+      <p style="color:var(--text-secondary);margin:0 0 16px;line-height:1.6;">为每个地区配置一条<span style="color:var(--accent,#6366f1);font-weight:600;">独立的 VPN 隧道</span>，地区之间互不影响。下方填写国家名即可新增；代理端口从 <span id="egress_base_port">7928</span> 起自动分配，管理端口由系统分配。点击顶部地区标签可在同一页面内切换查看各地区专属管理后台。</p>
+      <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center;margin-bottom:16px;">
+        <input id="egress_region" placeholder="国家名，如 Japan / United States" style="padding:8px 10px;border:1px solid var(--border,#e5e7eb);border-radius:8px;min-width:240px;background:var(--bg-input,#fff);color:var(--text-primary);" />
+        <input id="egress_slotid" placeholder="地区ID（可选，如 jp）" style="padding:8px 10px;border:1px solid var(--border,#e5e7eb);border-radius:8px;width:160px;background:var(--bg-input,#fff);color:var(--text-primary);" />
+        <button class="primary" onclick="addEgress()" style="padding:8px 16px;border:none;border-radius:8px;background:var(--accent,#6366f1);color:#fff;cursor:pointer;font-weight:600;">添加地区</button>
+        <button onclick="loadEgress()" style="padding:8px 16px;border:1px solid var(--border,#e5e7eb);border-radius:8px;background:var(--bg-input,#fff);color:var(--text-primary);cursor:pointer;">刷新状态</button>
+      </div>
+      <div id="egress_tabs" style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:12px;"></div>
+      <div id="egress_list" style="display:flex;gap:12px;flex-wrap:wrap;margin-bottom:12px;"></div>
+      <iframe id="egress_frame" class="egress-frame" src="about:blank" title="地区管理后台" style="width:100%;height:620px;border:1px solid var(--border,#e5e7eb);border-radius:10px;background:#fff;"></iframe>
+    </section>
+  </div>
+
 </main>
 </div>
 </body></html>"""
@@ -5875,6 +5960,19 @@ class Handler(BaseHTTPRequestHandler):
                     del stripped["config_text"]
                 stripped_nodes.append(stripped)
             self.send_json({"nodes": stripped_nodes, "state": get_state()})
+        elif effective_path == "/api/egress_regions":
+            try:
+                ui_cfg = _cached_load_ui_config()
+                regions = EGRESS_ORCH.status() if EGRESS_ORCH else []
+                for r in regions:
+                    r["panel_url"] = f"http://127.0.0.1:{r['ui_port']}/"
+                self.send_json({
+                    "configured": bool(ui_cfg.get("slots")),
+                    "regions": regions,
+                    "default_proxy_port": LOCAL_PROXY_PORT,
+                })
+            except Exception as exc:
+                self.send_json({"configured": False, "regions": [], "error": str(exc)}, HTTPStatus.INTERNAL_SERVER_ERROR)
         elif effective_path.startswith("/configs/"):
             filename = urllib.parse.unquote(effective_path.removeprefix("/configs/"))
             with lock:
@@ -6006,6 +6104,7 @@ class Handler(BaseHTTPRequestHandler):
             self.send_json({"error": "not found"}, HTTPStatus.NOT_FOUND)
 
     def do_POST(self) -> None:
+        global _config_cache
         effective_path = self.validate_path()
         if effective_path == "": return
         
@@ -6391,6 +6490,56 @@ class Handler(BaseHTTPRequestHandler):
                 self.send_json({"ok": True, "message": f"已启动 {len(node_ids)} 个节点的检测任务"})
             except Exception as exc:
                 self.send_json({"ok": False, "error": str(exc)}, HTTPStatus.INTERNAL_SERVER_ERROR)
+        elif effective_path == "/api/egress_regions":
+            try:
+                payload = self.read_json_body()
+                region = str(payload.get("region") or "").strip()
+                if not region:
+                    self.send_json({"ok": False, "error": "请填写地区/国家名（如 Japan / United States）"})
+                    return
+                ui_cfg = load_ui_config()
+                slots = list(ui_cfg.get("slots") or [])
+                slot_id = str(payload.get("slot_id") or f"slot_{len(slots) + 1}").strip() or f"slot_{len(slots) + 1}"
+                if any(str(s.get("slot_id")) == slot_id for s in slots):
+                    slot_id = f"{slot_id}_{len(slots) + 1}"
+                slots.append({"slot_id": slot_id, "region": region, "enabled": True})
+                ui_cfg["slots"] = slots
+                auth_file = DATA_DIR / "ui_auth.json"
+                with lock:
+                    DATA_DIR.mkdir(exist_ok=True, parents=True)
+                    write_json(auth_file, ui_cfg)
+                _config_cache = None
+                if EGRESS_ORCH is not None:
+                    EGRESS_ORCH.sync(ui_cfg)
+                regions = EGRESS_ORCH.status() if EGRESS_ORCH else []
+                for r in regions:
+                    r["panel_url"] = f"http://127.0.0.1:{r['ui_port']}/"
+                self.send_json({"ok": True, "regions": regions})
+            except Exception as exc:
+                self.send_json({"ok": False, "error": str(exc)}, HTTPStatus.INTERNAL_SERVER_ERROR)
+        elif effective_path == "/api/egress_regions/delete":
+            try:
+                payload = self.read_json_body()
+                slot_id = str(payload.get("slot_id") or "").strip()
+                if not slot_id:
+                    self.send_json({"ok": False, "error": "缺少 slot_id"})
+                    return
+                ui_cfg = load_ui_config()
+                slots = [s for s in (ui_cfg.get("slots") or []) if str(s.get("slot_id")) != slot_id]
+                ui_cfg["slots"] = slots
+                auth_file = DATA_DIR / "ui_auth.json"
+                with lock:
+                    DATA_DIR.mkdir(exist_ok=True, parents=True)
+                    write_json(auth_file, ui_cfg)
+                _config_cache = None
+                if EGRESS_ORCH is not None:
+                    EGRESS_ORCH.sync(ui_cfg)
+                regions = EGRESS_ORCH.status() if EGRESS_ORCH else []
+                for r in regions:
+                    r["panel_url"] = f"http://127.0.0.1:{r['ui_port']}/"
+                self.send_json({"ok": True, "regions": regions})
+            except Exception as exc:
+                self.send_json({"ok": False, "error": str(exc)}, HTTPStatus.INTERNAL_SERVER_ERROR)
         elif effective_path == "/api/disconnect":
             try:
                 ui_cfg = _cached_load_ui_config()
@@ -6570,6 +6719,19 @@ def main() -> None:
     print(f"UI: http://{ui_host}:{ui_port}/", flush=True)
     print(f"Proxy: http://{LOCAL_PROXY_HOST}:{LOCAL_PROXY_PORT}", flush=True)
     log_to_json("INFO", "Main", f"UI服务已启动: http://{ui_host}:{ui_port}/")
+
+    # 多地区出口：若配置了 slots 且本进程不是地区子进程，则拉起各地区独立子进程
+    global EGRESS_ORCH
+    if os.environ.get("VPNGATE_SLOT_CHILD") != "1" and ui_cfg.get("slots"):
+        try:
+            from slot_manager import SlotOrchestrator
+            EGRESS_ORCH = SlotOrchestrator(DATA_DIR, ui_port, LOCAL_PROXY_PORT)
+            EGRESS_ORCH.sync(ui_cfg)
+            log_to_json("INFO", "Egress", f"多地区编排已启动，共 {len(EGRESS_ORCH.regions)} 个地区")
+        except Exception as exc:
+            EGRESS_ORCH = None
+            log_to_json("ERROR", "Egress", f"多地区编排启动失败: {exc}")
+
     DualStackHTTPServer((ui_host, ui_port), Handler).serve_forever()
 
 if __name__ == "__main__":
