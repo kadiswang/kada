@@ -3562,7 +3562,7 @@ INDEX_HTML = r"""<!doctype html>
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 15v2m-6 4h12a2 2 0 002-2v-6a2 2 0 00-2-2H6a2 2 0 00-2 2v6a2 2 0 002 2zm10-10V7a4 4 0 00-8 0v4h8z"/></svg>
             网页安全
           </a>
-          <a class="nav-item sub-item" href="javascript:void(0)" onclick="event.stopPropagation(); openNetworkModal();">
+          <a class="nav-item sub-item" href="javascript:void(0)" onclick="event.stopPropagation(); switchPage('settings');">
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 00.33 1.82l.06.06a2 2 0 010 2.83 2 2 0 01-2.83 0l-.06-.06a1.65 1.65 0 00-1.82-.33 1.65 1.65 0 00-1 1.51V21a2 2 0 01-2 2 2 2 0 01-2-2v-.09A1.65 1.65 0 009 19.4a1.65 1.65 0 00-1.82.33l-.06.06a2 2 0 01-2.83 0 2 2 0 010-2.83l.06-.06A1.65 1.65 0 004.68 15a1.65 1.65 0 00-1.51-1H3a2 2 0 01-2-2 2 2 0 012-2h.09A1.65 1.65 0 004.6 9a1.65 1.65 0 00-.33-1.82l-.06-.06a2 2 0 010-2.83 2 2 0 012.83 0l.06.06A1.65 1.65 0 009 4.68a1.65 1.65 0 001-1.51V3a2 2 0 012-2 2 2 0 012 2v.09a1.65 1.65 0 001 1.51 1.65 1.65 0 001.82-.33l.06-.06a2 2 0 012.83 0 2 2 0 010 2.83l-.06.06a1.65 1.65 0 00-.33 1.82V9a1.65 1.65 0 001.51 1H21a2 2 0 012 2 2 2 0 01-2 2h-.09a1.65 1.65 0 00-1.51 1z"/></svg>
             代理设置
           </a>
@@ -3616,6 +3616,8 @@ INDEX_HTML = r"""<!doctype html>
     <section class="active-node-section" id="active_node_card" style="margin-bottom: 24px;">
       <!-- Rendered dynamically by render() -->
     </section>
+
+    <div id="egress_status_blocks" style="display:flex;gap:12px;flex-wrap:wrap;margin-bottom:24px;"></div>
 
     <div style="display: flex; align-items: center; justify-content: space-between; margin-bottom: 16px; flex-wrap: wrap; gap: 8px;">
       <span style="font-size: 15px; font-weight: 600; color: var(--text-primary);">节点列表</span>
@@ -3825,10 +3827,10 @@ INDEX_HTML = r"""<!doctype html>
       <div id="network_success" style="color: var(--success); font-size: 13px; margin-bottom: 16px; padding: 8px 12px; background: rgba(16,185,129,0.1); border: 1px solid rgba(16,185,129,0.2); border-radius: 6px; display: none;"></div>
 
       <form id="network_form" onsubmit="saveNetwork(event)">
-        <div class="form-group" style="margin-bottom: 16px;">
-          <label class="form-label" for="net_proxy_port">HTTP/SOCKS5 代理出站端口</label>
-          <input type="number" id="net_proxy_port" class="input-field" required min="1024" max="65535" placeholder="7928">
-        </div>
+          <div class="form-group" style="margin-bottom: 16px; display:none;">
+            <label class="form-label" for="net_proxy_port">HTTP/SOCKS5 代理出站端口</label>
+            <input type="number" id="net_proxy_port" class="input-field" required min="1024" max="65535" placeholder="7928">
+          </div>
 
         <div style="border-top: 1px dashed var(--border); padding-top: 16px; margin-bottom: 4px;">
           <label style="font-size: 13px; font-weight: 600; color: var(--text-primary); margin-bottom: 8px; display: flex; align-items: center; gap: 6px;">
@@ -4857,56 +4859,107 @@ async function loadEgress() {
   } catch (e) { console.error(e); }
 }
 function renderEgress() {
-  const tabs = $("egress_tabs");
   const list = $("egress_list");
-  const frame = $("egress_frame");
+  if (!list) return;
+  let html = "<div class='egress-card'><div class='egress-card-title'>默认出口（7928）</div><div class='egress-card-meta'>状态：🟢 常驻 ｜ 端口：7928 ｜ 不可删除</div></div>";
   if (!egressRegions.length) {
-    if (tabs) tabs.innerHTML = "";
-    if (list) list.innerHTML = "<div style='padding:24px;color:var(--text-secondary);'>尚未配置任何出站代理。请在上方填写端口（必填）后添加；每个代理就是一套独立隧道，国家/IP 可在它自己的面板里选，所有代理共用同一份节点池。</div>";
-    if (frame) frame.src = "about:blank";
-    return;
+    html += "<div style='padding:12px 0;color:var(--text-secondary);'>当前只有默认出口 7928。点击「添加出站代理」即可增加 7929、7930……</div>";
   }
-  if (tabs) tabs.innerHTML = egressRegions.map(function(r, i) {
-    const status = r.alive ? "🟢" : "🔴";
-    const label = r.slot_id + " :" + r.proxy_port;
-    return "<button class='egress-tab" + (i === 0 ? " active" : "") + "' id='etab_" + r.slot_id + "' onclick=\"selectEgress('" + r.slot_id + "')\">" + label + " " + status + " <span class='egress-x' onclick=\"event.stopPropagation();delEgress('" + r.slot_id + "')\">×</span></button>";
-  }).join("");
-  if (list) list.innerHTML = egressRegions.map(function(r) {
+  for (const r of egressRegions) {
     const status = r.alive ? "🟢 运行中" : "🔴 已停止";
-    return "<div class='egress-card'><div class='egress-card-title'>" + r.slot_id + "</div><div class='egress-card-meta'>状态：" + status + " ｜ 端口：" + r.proxy_port + " ｜ 国家：" + (r.region || "不限") + " ｜ tun：" + r.tun_dev + "</div></div>";
-  }).join("");
-  selectEgress(egressRegions[0].slot_id, true);
-}
-function selectEgress(slotId, skipRender) {
-  egressCurrent = slotId;
-  var tabs = document.querySelectorAll(".egress-tab");
-  tabs.forEach(function(t) { t.classList.remove("active"); });
-  var tab = $("etab_" + slotId);
-  if (tab) tab.classList.add("active");
-  var r = egressRegions.find(function(x) { return x.slot_id === slotId; });
-  var frame = $("egress_frame");
-  if (r && r.panel_url && frame) frame.src = r.panel_url;
+    html += "<div class='egress-card'><div class='egress-card-title'>" + r.slot_id + "（端口 " + r.proxy_port + "）</div><div class='egress-card-meta'>状态：" + status + " ｜ <span style='color:var(--danger);cursor:pointer;' onclick=\"delEgress('" + r.slot_id + "')\">删除</span></div></div>";
+  }
+  list.innerHTML = html;
 }
 async function addEgress() {
-  const name = $("egress_name").value.trim();
-  const port = $("egress_port").value.trim();
-  const country = $("egress_country").value.trim();
-  const node = $("egress_node").value.trim();
-  if (!port) { alert("请填写代理端口（必填，如 7929）"); return; }
-  if (!/^\d+$/.test(port)) { alert("代理端口必须是数字"); return; }
-  const resp = await fetchWithCsrf("./api/egress_regions", { method: "POST", body: JSON.stringify({ name: name, port: port, country: country, node_id: node }) });
+  const resp = await fetchWithCsrf("./api/egress_regions", { method: "POST", body: JSON.stringify({}) });
   const data = await resp.json();
   if (!data.ok) { alert("添加失败：" + (data.error || "")); return; }
   egressRegions = data.regions || [];
   renderEgress();
+  if (window.loadEgressStatus) loadEgressStatus();
 }
 async function delEgress(slotId) {
-  if (!confirm("确定删除出站代理 " + slotId + "？将停止其隧道并释放资源")) return;
+  if (!confirm("确定删除该出站代理？将停止其隧道并释放资源")) return;
   const resp = await fetchWithCsrf("./api/egress_regions/delete", { method: "POST", body: JSON.stringify({ slot_id: slotId }) });
   const data = await resp.json();
   if (!data.ok) { alert("删除失败：" + (data.error || "")); return; }
   egressRegions = data.regions || [];
   renderEgress();
+  if (window.loadEgressStatus) loadEgressStatus();
+}
+
+let settingsEgressList = [];
+async function loadSettings() {
+  try {
+    const resp = await fetchWithCsrf("./api/egress_status_all");
+    const data = await resp.json();
+    settingsEgressList = (data.egress || []);
+  } catch (e) { settingsEgressList = []; }
+  const sel = $("settings_egress");
+  if (sel) {
+    sel.innerHTML = settingsEgressList.map(function(e) {
+      return "<option value='" + e.slot_id + "'>" + (e.is_default ? "默认出口 (7928)" : (e.name + " (" + e.proxy_port + ")")) + "</option>";
+    }).join("");
+  }
+  try {
+    const nresp = await fetchWithCsrf("./api/nodes");
+    const ndata = await nresp.json();
+    const countries = [];
+    (ndata.nodes || []).forEach(function(n) { if (n.country && countries.indexOf(n.country) < 0) countries.push(n.country); });
+    const fc = $("set_force_country");
+    if (fc) fc.innerHTML = "<option value=''>不锁定（自动选最快）</option>" + countries.map(function(c) { return "<option value='" + c + "'>" + c + "</option>"; }).join("");
+  } catch (e) {}
+  onSettingsEgressChange();
+}
+function onSettingsEgressChange() {
+  const sel = $("settings_egress");
+  const slot = sel ? sel.value : "__default__";
+  const e = settingsEgressList.find(function(x) { return x.slot_id === slot; }) || {};
+  setSettingsRoutingMode(e.routing_mode || "auto", true);
+  setSettingsIpType(e.routing_ip_type || "all", true);
+  const fc = $("set_force_country");
+  if (fc) fc.value = e.force_country || "";
+  const grp = $("set_force_country_group");
+  if (grp) grp.style.display = (e.routing_mode === "fixed_region") ? "block" : "none";
+}
+function setSettingsRoutingMode(v, skip) {
+  const inp = $("set_routing_mode"); if (inp) inp.value = v;
+  document.querySelectorAll("#set_routing_mode_group .option-card").forEach(function(c) { c.classList.toggle("active", c.getAttribute("data-value") === v); });
+  const grp = $("set_force_country_group"); if (grp) grp.style.display = (v === "fixed_region") ? "block" : "none";
+}
+function setSettingsIpType(v, skip) {
+  const inp = $("set_routing_ip_type"); if (inp) inp.value = v;
+  document.querySelectorAll("#set_routing_ip_type_group .option-card").forEach(function(c) { c.classList.toggle("active", c.getAttribute("data-value") === v); });
+}
+async function saveSettingsRouting() {
+  const sel = $("settings_egress");
+  const slot = sel ? sel.value : "__default__";
+  const payload = { slot_id: slot, routing_mode: $("set_routing_mode").value, force_country: $("set_force_country").value, routing_ip_type: $("set_routing_ip_type").value, min_health_score: 0 };
+  const resp = await fetchWithCsrf("./api/egress_update_routing", { method: "POST", body: JSON.stringify(payload) });
+  const data = await resp.json();
+  if (data.ok) { alert("已保存：" + (data.message || "配置更新成功")); if (window.loadEgressStatus) loadEgressStatus(); }
+  else alert("保存失败：" + (data.error || ""));
+}
+
+async function loadEgressStatus() {
+  const box = $("egress_status_blocks");
+  if (!box) return;
+  try {
+    const resp = await fetchWithCsrf("./api/egress_status_all");
+    const data = await resp.json();
+    const list = data.egress || [];
+    if (!list.length) { box.innerHTML = ""; return; }
+    box.innerHTML = "<div style='width:100%;font-size:15px;font-weight:600;color:var(--text-primary);margin-bottom:4px;'>出站代理状态</div>" + list.map(function(e) {
+      const status = e.alive ? "🟢" : "🔴";
+      const label = e.is_default ? "默认出口 (7928)" : (e.name + " (" + e.proxy_port + ")");
+      const mode = ({auto:"自动",fixed_ip:"固定IP",fixed_region:"固定地区",favorites:"收藏"}[e.routing_mode] || e.routing_mode);
+      const country = e.force_country ? "锁定：" + e.force_country : "自动";
+      const ipType = ({all:"所有IP",residential:"住宅IP",hosting:"机房IP"}[e.routing_ip_type] || e.routing_ip_type);
+      const node = e.active_node_id ? "节点：" + e.active_node_id : "未连接";
+      return "<div class='egress-card'><div class='egress-card-title'>" + label + " " + status + "</div><div class='egress-card-meta'>模式：" + mode + " ｜ 国家：" + country + " ｜ 类型：" + ipType + " ｜ " + node + "</div></div>";
+    }).join("");
+  } catch (e) { box.innerHTML = ""; }
 }
 
 function switchPage(name) {
@@ -4918,6 +4971,8 @@ function switchPage(name) {
   if (nav) nav.classList.add("active");
   localStorage.setItem("vpngate_page", name);
   if (name === "egress") loadEgress();
+  else if (name === "settings") loadSettings();
+  else if (name === "overview") loadEgressStatus();
 }
 
 async function doRefreshNodes(){ 
@@ -5711,18 +5766,52 @@ URL.revokeObjectURL(url);
   <div id="page_egress" class="page-content" style="display:none;">
     <section class="toolbar" style="padding:20px;">
       <h2 style="margin:0 0 8px;font-size:20px;">出站代理</h2>
-      <p style="color:var(--text-secondary);margin:0 0 16px;line-height:1.6;">手动创建多个 <span style="color:var(--accent,#6366f1);font-weight:600;">HTTP/SOCKS5 出站代理</span>，每个代理就是一套和现在一模一样的独立隧道（端口你定，国家/IP 在它自己的面板里选）。所有代理<span style="color:var(--accent,#6366f1);font-weight:600;">共用同一份节点池</span>（只拉取一次官方节点，不会重复拉取）。填写端口（必填）即可新增；国家/地区与指定节点留空则不限。点击顶部标签可在本页面内切换查看各代理专属管理后台。</p>
+      <p style="color:var(--text-secondary);margin:0 0 16px;line-height:1.6;">这里只决定要几个 <span style="color:var(--accent,#6366f1);font-weight:600;">HTTP/SOCKS5 出站代理</span>。每个代理是一套独立隧道，端口自动顺延（默认出口为 <b>7928</b>，新增的从 7929 起）。所有代理<span style="color:var(--accent,#6366f1);font-weight:600;">共用同一份节点池</span>（只拉取一次，不会重复拉取）。配置每个出口的国家 / IP / 住宅，请到 <b>代理设置</b> 页选择对应出口后再设置。</p>
       <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center;margin-bottom:16px;">
-        <input id="egress_name" placeholder="名称（可选，如 日本1）" style="padding:8px 10px;border:1px solid var(--border,#e5e7eb);border-radius:8px;min-width:160px;background:var(--bg-input,#fff);color:var(--text-primary);" />
-        <input id="egress_port" placeholder="代理端口（必填，如 7929）" style="padding:8px 10px;border:1px solid var(--border,#e5e7eb);border-radius:8px;width:200px;background:var(--bg-input,#fff);color:var(--text-primary);" />
-        <input id="egress_country" placeholder="国家/地区（可选，如 Japan）" style="padding:8px 10px;border:1px solid var(--border,#e5e7eb);border-radius:8px;min-width:200px;background:var(--bg-input,#fff);color:var(--text-primary);" />
-        <input id="egress_node" placeholder="指定节点ID（可选）" style="padding:8px 10px;border:1px solid var(--border,#e5e7eb);border-radius:8px;width:180px;background:var(--bg-input,#fff);color:var(--text-primary);" />
-        <button class="primary" onclick="addEgress()" style="padding:8px 16px;border:none;border-radius:8px;background:var(--accent,#6366f1);color:#fff;cursor:pointer;font-weight:600;">添加出站代理</button>
+        <button class="primary" onclick="addEgress()" style="padding:8px 16px;border:none;border-radius:8px;background:var(--accent,#6366f1);color:#fff;cursor:pointer;font-weight:600;">+ 添加出站代理</button>
         <button onclick="loadEgress()" style="padding:8px 16px;border:1px solid var(--border,#e5e7eb);border-radius:8px;background:var(--bg-input,#fff);color:var(--text-primary);cursor:pointer;">刷新状态</button>
       </div>
-      <div id="egress_tabs" style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:12px;"></div>
-      <div id="egress_list" style="display:flex;gap:12px;flex-wrap:wrap;margin-bottom:12px;"></div>
-      <iframe id="egress_frame" class="egress-frame" src="about:blank" title="代理管理后台" style="width:100%;height:620px;border:1px solid var(--border,#e5e7eb);border-radius:10px;background:#fff;"></iframe>
+      <div id="egress_list" style="display:flex;gap:12px;flex-wrap:wrap;"></div>
+    </section>
+  </div>
+
+  <div id="page_settings" class="page-content" style="display:none;">
+    <section class="toolbar" style="padding:20px;">
+      <h2 style="margin:0 0 8px;font-size:20px;">代理设置</h2>
+      <p style="color:var(--text-secondary);margin:0 0 16px;line-height:1.6;">先选择要配置的<span style="color:var(--accent,#6366f1);font-weight:600;">出站代理</span>，下面的国家 / IP 类型 / 住宅 等设置与原先完全一致，各自独立、互不影响。</p>
+      <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center;margin-bottom:20px;">
+        <label style="font-size:14px;color:var(--text-primary);">配置出口：</label>
+        <select id="settings_egress" onchange="onSettingsEgressChange()" style="padding:8px 10px;border:1px solid var(--border,#e5e7eb);border-radius:8px;min-width:220px;background:var(--bg-input,#fff);color:var(--text-primary);"></select>
+      </div>
+      <div style="border-top:1px dashed var(--border); padding-top:16px;">
+        <div class="form-group" style="margin-bottom:16px;">
+          <label class="form-label">IP 出站路由模式</label>
+          <input type="hidden" id="set_routing_mode" value="auto">
+          <div class="option-group" id="set_routing_mode_group">
+            <div class="option-card active" data-value="auto" onclick="setSettingsRoutingMode('auto')"><div class="option-card-title">自动配置</div><div class="option-card-desc">智能切换，最稳定</div></div>
+            <div class="option-card" data-value="fixed_ip" onclick="setSettingsRoutingMode('fixed_ip')"><div class="option-card-title">固定 IP</div><div class="option-card-desc">锁定IP，不自动切换</div></div>
+            <div class="option-card" data-value="fixed_region" onclick="setSettingsRoutingMode('fixed_region')"><div class="option-card-title">固定地区</div><div class="option-card-desc">锁定特定国家地区</div></div>
+          </div>
+        </div>
+        <div id="set_force_country_group" class="form-group" style="margin-bottom:16px; display:none;">
+          <label class="form-label" for="set_force_country">锁定国家地区</label>
+          <select id="set_force_country" class="input-field" style="background:var(--surface-2);border:1px solid var(--border-color);color:var(--text-primary);outline:none;cursor:pointer;width:100%;height:40px;border-radius:8px;padding:0 12px;">
+            <option value="">不锁定（自动选最快）</option>
+          </select>
+        </div>
+        <div class="form-group" style="margin-bottom:16px;">
+          <label class="form-label">IP 出站类型过滤</label>
+          <input type="hidden" id="set_routing_ip_type" value="all">
+          <div class="option-group" id="set_routing_ip_type_group">
+            <div class="option-card active" data-value="all" onclick="setSettingsIpType('all')"><div class="option-card-title">所有IP</div><div class="option-card-desc">机房 + 住宅</div></div>
+            <div class="option-card" data-value="residential" onclick="setSettingsIpType('residential')"><div class="option-card-title">住宅IP</div><div class="option-card-desc">静态家宽</div></div>
+            <div class="option-card" data-value="hosting" onclick="setSettingsIpType('hosting')"><div class="option-card-title">机房IP</div><div class="option-card-desc">普通机房</div></div>
+          </div>
+        </div>
+        <div style="display:flex;gap:12px;justify-content:flex-end;">
+          <button onclick="saveSettingsRouting()" class="btn-primary" style="height:40px;padding:0 20px;font-weight:600;border-radius:8px;">保存修改</button>
+        </div>
+      </div>
     </section>
   </div>
 
@@ -6102,6 +6191,11 @@ class Handler(BaseHTTPRequestHandler):
                 })
             except Exception as exc:
                 self.send_json({"configured": False, "regions": [], "error": str(exc)}, HTTPStatus.INTERNAL_SERVER_ERROR)
+        elif effective_path == "/api/egress_status":
+            try:
+                self.send_json(get_instance_egress_status())
+            except Exception as exc:
+                self.send_json({"error": str(exc)}, HTTPStatus.INTERNAL_SERVER_ERROR)
         elif effective_path.startswith("/configs/"):
             filename = urllib.parse.unquote(effective_path.removeprefix("/configs/"))
             with lock:
@@ -6622,25 +6716,28 @@ class Handler(BaseHTTPRequestHandler):
         elif effective_path == "/api/egress_regions":
             try:
                 payload = self.read_json_body()
-                # 出站代理：端口由用户填写（必填）；国家/地区与指定节点可选
-                port_raw = payload.get("port")
-                port = 0
-                if port_raw not in (None, ""):
-                    try:
-                        port = int(port_raw)
-                    except (TypeError, ValueError):
-                        port = 0
-                if port and not (1 <= port <= 65535):
-                    self.send_json({"ok": False, "error": "端口需在 1-65535 之间"})
-                    return
-                country = str(payload.get("country") or "").strip()
-                node_id = str(payload.get("node_id") or "").strip()
+                # 出站代理：端口自动顺延（7929 起）；名称可选；国家/指定节点可选（用于预置）
                 name = str(payload.get("name") or "").strip()
                 ui_cfg = load_ui_config()
                 slots = list(ui_cfg.get("slots") or [])
                 slot_id = (name or f"egress_{len(slots) + 1}").strip() or f"egress_{len(slots) + 1}"
                 if any(str(s.get("slot_id")) == slot_id for s in slots):
                     slot_id = f"{slot_id}_{len(slots) + 1}"
+                # 端口：显式填写则校验，否则按 7929 起自动顺延
+                port = 0
+                port_raw = payload.get("port")
+                if port_raw not in (None, ""):
+                    try:
+                        port = int(port_raw)
+                    except (TypeError, ValueError):
+                        port = 0
+                if port and not (1024 <= port <= 65535):
+                    self.send_json({"ok": False, "error": "端口需在 1024-65535 之间"})
+                    return
+                if not port:
+                    port = 7929 + len(slots)
+                country = str(payload.get("country") or "").strip()
+                node_id = str(payload.get("node_id") or "").strip()
                 slot_def = {
                     "slot_id": slot_id,
                     "region": country,
@@ -6709,6 +6806,48 @@ class Handler(BaseHTTPRequestHandler):
                 self.send_json({"ok": True})
             except Exception as exc:
                 self.send_json({"ok": False, "error": str(exc)}, HTTPStatus.INTERNAL_SERVER_ERROR)
+        elif effective_path == "/api/egress_status_all":
+            try:
+                self.send_json({"ok": True, "egress": aggregate_egress_status()})
+            except Exception as exc:
+                self.send_json({"ok": False, "error": str(exc)}, HTTPStatus.INTERNAL_SERVER_ERROR)
+        elif effective_path == "/api/egress_update_routing":
+            try:
+                payload = self.read_json_body()
+                slot_id = str(payload.get("slot_id") or "__default__").strip()
+                routing_mode = str(payload.get("routing_mode") or "auto").strip()
+                force_country = str(payload.get("force_country") or "").strip()
+                routing_ip_type = str(payload.get("routing_ip_type") or "all").strip()
+                min_health_score = int(payload.get("min_health_score", 0)) or 0
+                if routing_mode not in ("auto", "fixed_ip", "fixed_region", "favorites"):
+                    self.send_json({"ok": False, "error": "无效的路由配置模式"}); return
+                if routing_ip_type not in ("all", "residential", "hosting"):
+                    self.send_json({"ok": False, "error": "无效的IP出站类型过滤"}); return
+                if slot_id in ("", "__default__"):
+                    ui_cfg = _cached_load_ui_config()
+                    ui_cfg["routing_mode"] = routing_mode
+                    ui_cfg["force_country"] = force_country
+                    ui_cfg["routing_ip_type"] = routing_ip_type
+                    ui_cfg["min_health_score"] = min_health_score
+                    ui_cfg.pop("enable_force_country", None)
+                    with lock:
+                        DATA_DIR.mkdir(exist_ok=True, parents=True)
+                        write_json(DATA_DIR / "ui_auth.json", ui_cfg)
+                    enforce_active_node_allowed_by_routing(ui_cfg, "出站路由配置已更新")
+                    self.send_json({"ok": True, "message": "配置已更新，已即时生效！"})
+                else:
+                    orch = globals().get("EGRESS_ORCH")
+                    target = orch.regions.get(slot_id) if orch is not None else None
+                    if target is None:
+                        self.send_json({"ok": False, "error": "未找到该出口，请刷新后重试"}); return
+                    self.send_json(egress_forward(target.ui_port, "/api/update_routing", {
+                        "routing_mode": routing_mode,
+                        "force_country": force_country,
+                        "routing_ip_type": routing_ip_type,
+                        "min_health_score": min_health_score,
+                    }))
+            except Exception as exc:
+                self.send_json({"ok": False, "error": str(exc)}, HTTPStatus.INTERNAL_SERVER_ERROR)
         elif effective_path == "/api/connect":
             try:
                 payload = self.read_json_body()
@@ -6772,6 +6911,90 @@ def session_cleanup_loop() -> None:
     while True:
         time.sleep(SESSION_CLEANUP_INTERVAL)
         _cleanup_expired_sessions()
+
+
+# ===== 出站代理：状态聚合与配置转发（父进程统一调度） =====
+def _quick_proxy_listen(port: int) -> bool:
+    is_ipv6 = ":" in LOCAL_PROXY_HOST
+    af = socket.AF_INET6 if is_ipv6 else socket.AF_INET
+    host = "::1" if is_ipv6 else "127.0.0.1"
+    s = None
+    try:
+        s = socket.socket(af, socket.SOCK_STREAM)
+        s.settimeout(0.8)
+        s.connect((host, port))
+        return True
+    except Exception:
+        return False
+    finally:
+        if s is not None:
+            try:
+                s.close()
+            except Exception:
+                pass
+
+
+def get_instance_egress_status() -> dict[str, Any]:
+    """返回当前进程（一个出站代理实例）的轻量状态摘要。"""
+    ui_cfg = _cached_load_ui_config()
+    pport = int(ui_cfg.get("proxy_port", LOCAL_PROXY_PORT))
+    return {
+        "proxy_port": pport,
+        "alive": _quick_proxy_listen(pport),
+        "active_node_id": active_openvpn_node_id,
+        "routing_mode": ui_cfg.get("routing_mode", "auto"),
+        "force_country": ui_cfg.get("force_country", ""),
+        "routing_ip_type": ui_cfg.get("routing_ip_type", "all"),
+    }
+
+
+def egress_forward(ui_port: int, path: str, payload: dict[str, Any]) -> dict[str, Any]:
+    """以服务端身份把配置转发到某个子出口进程（绕过浏览器跨域与鉴权）。"""
+    base = f"http://127.0.0.1:{ui_port}"
+    token = None
+    try:
+        with urllib.request.urlopen(urllib.request.Request(base + "/api/csrf_token", method="GET"), timeout=3) as r:
+            token = json.loads(r.read().decode("utf-8")).get("csrf_token")
+    except Exception:
+        token = None
+    req = urllib.request.Request(
+        base + path,
+        data=json.dumps(payload).encode("utf-8"),
+        headers={"Content-Type": "application/json", "X-CSRF-Token": token or ""},
+        method="POST",
+    )
+    with urllib.request.urlopen(req, timeout=5) as r:
+        return json.loads(r.read().decode("utf-8"))
+
+
+def aggregate_egress_status() -> list[dict[str, Any]]:
+    """汇总所有出站代理状态：默认 7928 + 各子出口。"""
+    result: list[dict[str, Any]] = [{
+        "slot_id": "__default__",
+        "is_default": True,
+        "name": "默认出口",
+        **get_instance_egress_status(),
+    }]
+    orch = globals().get("EGRESS_ORCH")
+    if orch is not None:
+        for rp in orch.regions.values():
+            entry: dict[str, Any] = {
+                "slot_id": rp.cfg.slot_id,
+                "is_default": False,
+                "name": rp.cfg.slot_id,
+                "proxy_port": rp.proxy_port,
+                "alive": False,
+            }
+            try:
+                with urllib.request.urlopen(
+                    urllib.request.Request(f"http://127.0.0.1:{rp.ui_port}/api/egress_status", method="GET"),
+                    timeout=2,
+                ) as r:
+                    entry.update(json.loads(r.read().decode("utf-8")))
+            except Exception:
+                pass
+            result.append(entry)
+    return result
 
 
 def main() -> None:

@@ -161,7 +161,8 @@ class SlotOrchestrator:
         return self.base_ui_port + 100 + idx
 
     def _proxy_port_for(self, idx: int) -> int:
-        return self.base_proxy_port + idx
+        # +1 让子出口从 7929 起，避免与父进程默认出口 7928 冲突
+        return self.base_proxy_port + idx + 1
 
     def _publish_shared_pool(self) -> None:
         """把父进程（默认出口）已抓取并测速的节点池发布到共享文件，
