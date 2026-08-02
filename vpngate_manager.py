@@ -167,12 +167,151 @@ _nodes_cache: list[dict[str, Any]] | None = None
 _nodes_cache_time = 0.0
 _NODES_CACHE_TTL = NODE_CACHE_TTL
 
+MAX_SLOTS = env_int("NODE_POOL_MAX", 5, 1, 10)
+
+class Slot:
+    __slots__ = ("slot_id", "country", "country_code", "tun_index", "route_table",
+                 "process", "state", "node_id", "node_ip", "latency_ms",
+                 "proxy_ok", "proxy_ip", "proxy_error", "last_heartbeat",
+                 "is_connecting")
+
+    def __init__(self, slot_id: str, country: str, country_code: str, tun_index: int, route_table: int):
+        self.slot_id = slot_id
+        self.country = country
+        self.country_code = country_code
+        self.tun_index = tun_index
+        self.route_table = route_table
+        self.process: subprocess.Popen[str] | None = None
+        self.state = "idle"
+        self.node_id = ""
+        self.node_ip = ""
+        self.latency_ms = 0
+        self.proxy_ok = False
+        self.proxy_ip = "-"
+        self.proxy_error = ""
+        self.last_heartbeat = 0.0
+        self.is_connecting = False
+
+    def tun_device(self) -> str:
+        return f"tun{self.tun_index}"
+
+    def running(self) -> bool:
+        return self.process is not None and self.process.poll() is None
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "slot_id": self.slot_id,
+            "country": self.country,
+            "country_code": self.country_code,
+            "tun_device": self.tun_device(),
+            "route_table": self.route_table,
+            "state": self.state,
+            "node_id": self.node_id,
+            "node_ip": self.node_ip,
+            "latency_ms": self.latency_ms,
+            "proxy_ok": self.proxy_ok,
+            "proxy_ip": self.proxy_ip,
+            "proxy_error": self.proxy_error,
+            "is_connecting": self.is_connecting,
+        }
+
+node_pool: dict[str, Slot] = {}
+_slot_lock = threading.RLock()
+_pool_next_tun_index = 0
+_pool_freed_tun_indices: list[int] = []
+
+def pool_get_slots_snapshot() -> list[dict[str, Any]]:
+    with _slot_lock:
+        return [s.to_dict() for s in node_pool.values()]
+
+def pool_find_slot_by_country(country_code: str) -> Slot | None:
+    with _slot_lock:
+        for slot in node_pool.values():
+            if slot.country_code.upper() == country_code.upper():
+                return slot
+    return None
+
+def pool_get_slot(slot_id: str) -> Slot | None:
+    with _slot_lock:
+        return node_pool.get(slot_id)
+
+def _alloc_tun_index() -> int:
+    global _pool_next_tun_index
+    if _pool_freed_tun_indices:
+        return _pool_freed_tun_indices.pop(0)
+    idx = _pool_next_tun_index
+    _pool_next_tun_index += 1
+    return idx
+
+def _free_tun_index(idx: int) -> None:
+    global _pool_next_tun_index
+    if idx == _pool_next_tun_index - 1:
+        _pool_next_tun_index -= 1
+    else:
+        _pool_freed_tun_indices.append(idx)
+        _pool_freed_tun_indices.sort()
+
+def create_slot(country: str, country_code: str) -> Slot:
+    with _slot_lock:
+        if len(node_pool) >= MAX_SLOTS:
+            raise RuntimeError(f"节点池已满（上限 {MAX_SLOTS}）")
+        existing = pool_find_slot_by_country(country_code)
+        if existing:
+            raise RuntimeError(f"地区出口 {country_code} 已存在")
+        tun_index = _alloc_tun_index()
+        route_table = 101 + tun_index
+        slot_id = f"{country_code.upper()}_slot_{tun_index}"
+        slot = Slot(slot_id=slot_id, country=country, country_code=country_code, tun_index=tun_index, route_table=route_table)
+        node_pool[slot_id] = slot
+        return slot
+
+def destroy_slot(slot_id: str) -> None:
+    with _slot_lock:
+        slot = node_pool.pop(slot_id, None)
+    if slot is None:
+        return
+    stop_process(slot.process)
+    slot.process = None
+    _cleanup_slot_policy_routing(slot)
+    with _slot_lock:
+        _free_tun_index(slot.tun_index)
+    log_to_json("INFO", "Slot", f"已移除地区出口 {slot.country} ({slot.slot_id})")
+
+def _cleanup_slot_policy_routing(slot: Slot) -> None:
+    dev = slot.tun_device()
+    table = slot.route_table
+    try:
+        subprocess.run(["ip", "rule", "del", "table", str(table)], capture_output=True, timeout=2)
+    except Exception:
+        pass
+    try:
+        subprocess.run(["ip", "route", "flush", "table", str(table)], capture_output=True, timeout=2)
+    except Exception:
+        pass
+    try:
+        subprocess.run(["ip", "link", "delete", dev], capture_output=True, timeout=2)
+    except Exception:
+        pass
+
+_route_round_robin_counter = 0
+
+def _route_device_for_connection(conn_ctx: dict | None = None) -> str:
+    global _route_round_robin_counter
+    with _slot_lock:
+        connected = [s for s in node_pool.values() if s.state == "connected" and s.running() and not s.is_connecting]
+    if not connected:
+        return "tun0"
+    if len(connected) == 1:
+        return connected[0].tun_device()
+    _route_round_robin_counter += 1
+    chosen = connected[_route_round_robin_counter % len(connected)]
+    return chosen.tun_device()
+
 def _cleanup_expired_sessions() -> None:
     now = time.time()
     expired = [t for t, exp in active_sessions.items() if exp <= now]
     for t in expired:
         active_sessions.pop(t, None)
-
 
 def _get_or_cleanup_sessions() -> dict[str, float]:
     _cleanup_expired_sessions()
@@ -214,7 +353,8 @@ def load_ui_config() -> dict[str, Any]:
             "fixed_node_id": "",
             "favorite_node_ids": [],
             "fav_fail_fallback": True,
-            "upstream_proxy": { "enabled": False }
+            "upstream_proxy": { "enabled": False },
+            "slot_countries": [],
         }
         updated = False
         if auth_file.exists():
@@ -222,7 +362,7 @@ def load_ui_config() -> dict[str, Any]:
                 data = json.loads(auth_file.read_text(encoding="utf-8"))
                 for key, val in data.items():
                     config[key] = val
-                for key in ["host", "port", "proxy_port", "routing_mode", "force_country", "routing_ip_type", "min_health_score", "connection_enabled", "fixed_node_id", "favorite_node_ids", "fav_fail_fallback", "upstream_proxy"]:
+                for key in ["host", "port", "proxy_port", "routing_mode", "force_country", "routing_ip_type", "min_health_score", "connection_enabled", "fixed_node_id", "favorite_node_ids", "fav_fail_fallback", "upstream_proxy", "slot_countries"]:
                     if key not in data:
                         updated = True
             except Exception:
@@ -529,6 +669,9 @@ def get_state() -> dict[str, Any]:
     state["upstream_proxy"] = ui_cfg.get("upstream_proxy", { "enabled": False })
     state["country_translations"] = vpn_utils.COUNTRY_TRANSLATIONS
     state["maintenance_running"] = maintenance_lock.locked()
+    state["slot_countries"] = ui_cfg.get("slot_countries", [])
+    state["slot_summary"] = pool_get_slots_snapshot()
+    state["max_slots"] = MAX_SLOTS
     
     return state
 
@@ -1259,43 +1402,42 @@ def run_openvpn_until_ready(config_file: str, keep_alive: bool, route_nopull: bo
     return ok, message, process
 
 
-def setup_policy_routing(interface: str = "tun0") -> None:
+def setup_policy_routing(interface: str = "tun0", route_table: int = 100) -> None:
     try:
-        subprocess.run(["ip", "rule", "del", "table", "100"], capture_output=True, timeout=2)
+        subprocess.run(["ip", "rule", "del", "table", str(route_table)], capture_output=True, timeout=2)
     except Exception:
         pass
     try:
-        subprocess.run(["ip", "route", "flush", "table", "100"], capture_output=True, timeout=2)
+        subprocess.run(["ip", "route", "flush", "table", str(route_table)], capture_output=True, timeout=2)
     except Exception:
         pass
     
     success = False
     for attempt in range(1, 4):
         try:
-            subprocess.run(["ip", "route", "add", "default", "dev", interface, "table", "100"], check=True, timeout=2)
-            subprocess.run(["ip", "rule", "add", "oif", interface, "table", "100"], check=True, timeout=2)
-            # 配置反向路径过滤 rp_filter 为 loose 模式 (2)，防止回包被内核静默丢弃
+            subprocess.run(["ip", "route", "add", "default", "dev", interface, "table", str(route_table)], check=True, timeout=2)
+            subprocess.run(["ip", "rule", "add", "oif", interface, "table", str(route_table)], check=True, timeout=2)
             for proc_path in ["all", "default", interface]:
                 try:
                     subprocess.run(["sysctl", "-w", f"net.ipv4.conf.{proc_path}.rp_filter=2"], capture_output=True, timeout=2)
                 except Exception:
                     pass
-            print(f"[policy_routing] Enabled policy routing for interface {interface} (attempt {attempt} success)", flush=True)
+            print(f"[policy_routing] Enabled policy routing for interface {interface} table {route_table} (attempt {attempt} success)", flush=True)
             success = True
             break
         except Exception as e:
-            print(f"[policy_routing] Attempt {attempt} failed to enable policy routing: {e}", flush=True)
+            print(f"[policy_routing] Attempt {attempt} failed to enable policy routing for {interface} table {route_table}: {e}", flush=True)
             time.sleep(1)
             
     if not success:
-        print("[路由配置失败] [错误代码 3003] [ERR_ROUTE_TABLE_ADD_FAILED] 策略路由配置失败。原因: 无法向路由表 100 添加默认路由，这可能会导致通过 VPN 接口的出站路由无法正常解析。请检查系统是否支持策略路由、iproute2 工具是否完整，以及是否具有 root 权限。", flush=True)
-        log_to_json("ERROR", "Routing", "[错误代码 3003] [ERR_ROUTE_TABLE_ADD_FAILED] 策略路由配置失败。原因: 无法向路由表 100 添加默认路由")
+        print(f"[路由配置失败] [错误代码 3003] [ERR_ROUTE_TABLE_ADD_FAILED] 策略路由配置失败 for {interface} table {route_table}。", flush=True)
+        log_to_json("ERROR", "Routing", f"[错误代码 3003] [ERR_ROUTE_TABLE_ADD_FAILED] 策略路由配置失败 for {interface} table {route_table}")
 
-def cleanup_policy_routing() -> None:
+def cleanup_policy_routing(route_table: int = 100) -> None:
     try:
-        subprocess.run(["ip", "rule", "del", "table", "100"], capture_output=True, timeout=2)
-        subprocess.run(["ip", "route", "flush", "table", "100"], capture_output=True, timeout=2)
-        print("[policy_routing] Cleared policy routing table 100", flush=True)
+        subprocess.run(["ip", "rule", "del", "table", str(route_table)], capture_output=True, timeout=2)
+        subprocess.run(["ip", "route", "flush", "table", str(route_table)], capture_output=True, timeout=2)
+        print(f"[policy_routing] Cleared policy routing table {route_table}", flush=True)
     except Exception:
         pass
 
@@ -1876,6 +2018,146 @@ def connect_node(node_id: str) -> str:
     finally:
         with lock:
             is_connecting = False
+
+def connect_node_for_slot(node_id: str, slot: Slot) -> str:
+    node_id = str(node_id or "").strip()
+    if not node_id:
+        raise ValueError("Node id is required")
+    with _slot_lock:
+        if slot.is_connecting:
+            raise RuntimeError("当前槽位已有连接任务正在运行，请稍后再试")
+        slot.is_connecting = True
+        slot.state = "connecting"
+        
+    try:
+        log_to_json("INFO", "VPN", f"[{slot.slot_id}] 开始连接节点: {node_id}")
+        nodes = read_nodes()
+        node = next((item for item in nodes if item.get("id") == node_id), None)
+        if not node:
+            raise ValueError(f"Node not found: {node_id}")
+        
+        dev = slot.tun_device()
+        with _slot_lock:
+            slot.node_ip = node.get("ip") or node.get("remote_host")
+            slot.node_id = node_id
+        
+        if slot.running():
+            stop_process(slot.process)
+            slot.process = None
+
+        config_path = Path(node["config_file"])
+        try:
+            CONFIG_DIR.mkdir(exist_ok=True, parents=True)
+            config_path.write_text(node.get("config_text") or "", encoding="utf-8")
+        except Exception as e:
+            raise RuntimeError(f"Failed to write configuration: {e}")
+        
+        ok, message, process = run_openvpn_until_ready(str(node["config_file"]), keep_alive=True, route_nopull=True, dev=dev)
+        if not ok or process is None:
+            try:
+                if config_path.exists():
+                    config_path.unlink()
+            except Exception:
+                pass
+            node["probe_status"] = "unavailable"
+            node["probe_message"] = message
+            log_to_json("ERROR", "VPN", f"[{slot.slot_id}] 连接节点失败: {message}")
+            with _slot_lock:
+                slot.state = "failed"
+                slot.is_connecting = False
+            raise RuntimeError(message)
+        
+        with _slot_lock:
+            slot.process = process
+            slot.state = "connected"
+        
+        setup_policy_routing(dev, slot.route_table)
+        
+        ip = node.get("ip") or node.get("remote_host")
+        port = parse_int(node.get("remote_port"))
+        fallback = parse_int(node.get("ping"))
+        try:
+            latency = vpn_utils.ping_latency_ms(ip, port, fallback)
+            if latency > 0:
+                with _slot_lock:
+                    slot.latency_ms = latency
+        except Exception:
+            pass
+        
+        with _slot_lock:
+            slot.node_ip = ip
+        
+        log_to_json("INFO", "VPN", f"[{slot.slot_id}] 节点 {node_id} 连接成功，出口网卡 {dev} 已启用")
+        with _slot_lock:
+            slot.is_connecting = False
+        return f"Connected {node_id} on {dev}"
+    except Exception:
+        with _slot_lock:
+            slot.is_connecting = False
+            if slot.state != "failed":
+                slot.state = "idle"
+        raise
+    
+def _add_slot_connect(slot: Slot, country_code: str) -> None:
+    try:
+        nodes = read_nodes()
+        candidates = [
+            n for n in nodes
+            if n.get("probe_status") == "available"
+            and not n.get("active")
+            and country_matches(n.get("country"), slot.country)
+        ]
+        if not candidates:
+            print(f"[{slot.slot_id}] 没有可用的 {country_code} 地区节点，等待节点刷新", flush=True)
+            log_to_json("WARNING", "Slot", f"[{slot.slot_id}] 没有可用的 {country_code} 地区节点")
+            return
+        candidates.sort(key=lambda n: (parse_int(n.get("latency_ms")) or 999999, -parse_int(n.get("score"))))
+        connect_node_for_slot(candidates[0]["id"], slot)
+    except Exception as e:
+        print(f"[{slot.slot_id}] 自动连接失败: {e}", flush=True)
+        log_to_json("ERROR", "Slot", f"[{slot.slot_id}] 自动连接失败: {e}")
+        with _slot_lock:
+            if slot.state != "connected":
+                slot.state = "failed"
+                slot.proxy_error = str(e)
+                slot.is_connecting = False
+
+def auto_switch_node_for_slot(slot: Slot, attempt: int = 0) -> None:
+    if attempt >= 3:
+        print(f"[{slot.slot_id}] 连续切换失败已达 3 次", flush=True)
+        return
+        
+    with _slot_lock:
+        nodes = read_nodes()
+        current_node_id = slot.node_id
+        candidates = [
+            n for n in nodes 
+            if n.get("probe_status") == "available" 
+            and n.get("id") != current_node_id
+            and country_matches(n.get("country"), slot.country)
+        ]
+        candidates.sort(key=lambda n: (parse_int(n.get("latency_ms")) or 999999, -parse_int(n.get("score"))))
+        
+    if candidates:
+        next_node = candidates[0]
+        print(f"[{slot.slot_id}] 正在自动切换至最佳备用节点: {next_node['id']}", flush=True)
+        log_to_json("INFO", "VPN", f"[{slot.slot_id}] 自动切换至 {next_node['id']}")
+        try:
+            connect_node_for_slot(next_node["id"], slot)
+        except Exception as e:
+            print(f"[{slot.slot_id}] 切换到 {next_node['id']} 失败: {e}", flush=True)
+            auto_switch_node_for_slot(slot, attempt + 1)
+    else:
+        print(f"[{slot.slot_id}] 没有可用的备选节点", flush=True)
+        log_to_json("WARNING", "VPN", f"[{slot.slot_id}] 没有可用的备选节点，等待节点更新")
+        with _slot_lock:
+            if slot.state == "connected":
+                stop_process(slot.process)
+                slot.process = None
+                slot.state = "idle"
+                slot.node_id = ""
+                slot.proxy_ok = False
+        _cleanup_slot_policy_routing(slot)
 
 def maintain_valid_nodes(force: bool = False) -> str:
     global active_openvpn_process, active_openvpn_node_id, is_connecting
@@ -3459,6 +3741,36 @@ INDEX_HTML = r"""<!doctype html>
       <!-- Rendered dynamically by render() -->
     </section>
 
+    <section id="multi_egress_panel" style="background: var(--surface); border: 1px solid var(--border-color); border-radius: 12px; padding: 20px; margin-bottom: 24px;">
+      <div style="display: flex; align-items: center; justify-content: space-between; margin-bottom: 16px; flex-wrap: wrap; gap: 12px;">
+        <div style="display: flex; align-items: center; gap: 10px;">
+          <div class="stat-icon-wrapper" style="background: rgba(16, 185, 129, 0.12); border-color: rgba(16, 185, 129, 0.25); width: 36px; height: 36px; border-radius: 8px; flex-shrink: 0;">
+            <svg xmlns="http://www.w3.org/2000/svg" class="stat-icon" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2" style="color: #10b981; width: 18px; height: 18px;"><path stroke-linecap="round" stroke-linejoin="round" d="M3.055 11H5a2 2 0 012 2v1a2 2 0 002 2 2 2 0 012 2v2.945M8 3.935V5.5A2.5 2.5 0 0010.5 8h.5a2 2 0 012 2 2 2 0 104 0 2 2 0 012-2h1.064M15 20.488V18a2 2 0 012-2h3.064M21 12a9 9 0 11-18 0 9 9 0 0118 0z" /></svg>
+          </div>
+          <div>
+            <h3 style="margin: 0; font-size: 15px; font-weight: 600; color: var(--text-primary);">多地区出口</h3>
+            <p style="margin: 2px 0 0 0; font-size: 12px; color: var(--text-secondary;">同时建立多个国家地区的独立出口，代理流量自动负载均衡分配</p>
+          </div>
+        </div>
+        <span id="slot_count_badge" class="badge" style="font-size: 12px;">0 个出口</span>
+      </div>
+
+      <div id="slots_list" style="display: flex; flex-direction: column; gap: 12px; margin-bottom: 16px;">
+        <div style="text-align: center; color: var(--text-secondary); padding: 12px 0; font-size: 13px;" id="slots_empty_hint">尚未配置多地区出口。从下方选择国家地区添加出口。</div>
+      </div>
+
+      <div style="display: flex; align-items: center; gap: 10px; flex-wrap: wrap; padding-top: 14px; border-top: 1px dashed var(--border-color);">
+        <select id="slot_country_select" class="input-field" style="height: 38px; font-size: 13px; border-radius: 8px; padding: 0 10px; background: var(--surface-2); min-width: 180px;">
+          <option value="">选择国家地区...</option>
+        </select>
+        <button id="btn_add_slot" class="btn-primary" type="button" onclick="addSlot()" style="height: 38px; padding: 0 18px; font-size: 13px;">
+          <svg xmlns="http://www.w3.org/2000/svg" style="width:14px; height:14px;" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><path stroke-linecap="round" stroke-linejoin="round" d="M12 4v16m8-8H4" /></svg>
+          添加出口
+        </button>
+        <span style="font-size: 12px; color: var(--text-secondary);" id="slot_limit_hint"></span>
+      </div>
+    </section>
+
     <div style="display: flex; align-items: center; justify-content: space-between; margin-bottom: 16px; flex-wrap: wrap; gap: 8px;">
       <span style="font-size: 15px; font-weight: 600; color: var(--text-primary);">节点列表</span>
       <span id="overview_filter_label" style="font-size: 12px; color: var(--text-secondary);"></span>
@@ -4668,6 +4980,7 @@ async function load(){
   updateCountryFilter();
   populateRoutingCountries();
   render();
+  refreshSlots();
 
   if (state.is_connecting) {
     startConnectionPolling();
@@ -5001,6 +5314,170 @@ function populateRoutingCountries() {
   }
 }
 
+let slotsCache = [];
+let slotMax = 5;
+
+async function refreshSlots() {
+  try {
+    const d = await fetchWithCsrf("./api/slots");
+    slotsCache = Array.isArray(d.slots) ? d.slots : [];
+    slotMax = d.max_slots || 5;
+    if (d.countries) countryDict = d.countries;
+    populateSlotCountrySelect();
+    renderSlots();
+  } catch(e) {
+    console.error("刷新多地区出口失败", e);
+  }
+}
+
+function populateSlotCountrySelect() {
+  const select = $("slot_country_select");
+  if (!select) return;
+  const countMap = {};
+  nodes.forEach(n => {
+    const c = n.country;
+    if (c) {
+      const key = String(c).toUpperCase();
+      countMap[key] = (countMap[key] || 0) + 1;
+    }
+  });
+  let html = '<option value="">选择国家地区...</option>';
+  Object.keys(countMap).sort().forEach(cc => {
+    html += `<option value="${esc(cc)}">${esc(translateCountry(cc))} (${countMap[cc]}个节点)</option>`;
+  });
+  select.innerHTML = html;
+  const hint = $("slot_limit_hint");
+  if (hint) hint.textContent = `最多 ${slotMax} 个出口，当前 ${slotsCache.length} 个`;
+}
+
+function renderSlots() {
+  const list = $("slots_list");
+  const empty = $("slots_empty_hint");
+  const badge = $("slot_count_badge");
+  if (!list) return;
+  if (badge) badge.textContent = `${slotsCache.length} 个出口`;
+  if (slotsCache.length === 0) {
+    list.innerHTML = `<div style="text-align: center; color: var(--text-secondary); padding: 12px 0; font-size: 13px;">尚未配置多地区出口。从下方选择国家地区添加出口。</div>`;
+    return;
+  }
+  let html = "";
+  slotsCache.forEach(s => {
+    const countryName = esc(translateCountry(s.country_code));
+    const tunLabel = esc(s.tun_device || "-");
+    const nodeId = esc(s.node_id || "-");
+    const nodeIp = esc(s.node_ip || "-");
+    const latText = s.latency_ms ? `${s.latency_ms} ms` : "-";
+    let stateBadge = "";
+    let stateColor = "";
+    if (s.state === "connected") {
+      stateBadge = `<span class="badge available"><span class="badge-pulse"></span>已连接</span>`;
+      stateColor = "rgba(16, 185, 129, 0.12)";
+    } else if (s.state === "connecting") {
+      stateBadge = `<span class="badge" style="background: rgba(245, 158, 11, 0.15); color: #f59e0b; border-color: rgba(245, 158, 11, 0.3);"><span class="badge-pulse" style="background: #f59e0b;"></span>连接中</span>`;
+      stateColor = "rgba(245, 158, 11, 0.08)";
+    } else if (s.state === "failed") {
+      stateBadge = `<span class="badge unavailable">失败</span>`;
+      stateColor = "rgba(239, 68, 68, 0.08)";
+    } else {
+      stateBadge = `<span class="badge not_checked">空闲</span>`;
+      stateColor = "rgba(148, 163, 184, 0.08)";
+    }
+    const proxyOk = s.proxy_ok
+      ? `<span class="badge available" style="margin-left:6px;">出口 ${esc(s.proxy_ip || "正常")}</span>`
+      : `<span class="badge not_checked" style="margin-left:6px;">出口检测中</span>`;
+    html += `
+      <div style="background: ${stateColor}; border: 1px solid var(--border-color); border-radius: 10px; padding: 14px 16px;">
+        <div style="display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 10px;">
+          <div style="display: flex; align-items: center; gap: 12px; flex-wrap: wrap;">
+            <div style="display: flex; align-items: center; gap: 8px;">
+              <strong style="color: var(--text-primary); font-size: 14px;">${countryName}</strong>
+              <code style="font-size: 12px; background: rgba(99,102,241,0.1); color: var(--primary); padding: 2px 8px; border-radius: 6px;">${tunLabel}</code>
+            </div>
+            ${stateBadge}${proxyOk}
+          </div>
+          <div style="display: flex; align-items: center; gap: 8px;">
+            <span style="font-size: 12px; color: var(--text-secondary);">延迟 <strong style="color: var(--text-primary);">${latText}</strong></span>
+            <button class="toolbar-btn" type="button" onclick="renewSlot('${esc(s.slot_id)}')" style="height: 32px; gap: 4px; font-size: 12px;">
+              <svg xmlns="http://www.w3.org/2000/svg" style="width:13px; height:13px;" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><path stroke-linecap="round" stroke-linejoin="round" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" /></svg>
+              更新节点
+            </button>
+            <button class="btn-danger" type="button" onclick="removeSlot('${esc(s.slot_id)}', '${countryName}')" style="height: 32px; padding: 0 12px; font-size: 12px;">
+              <svg xmlns="http://www.w3.org/2000/svg" style="width:13px; height:13px;" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><path stroke-linecap="round" stroke-linejoin="round" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" /></svg>
+              移除
+            </button>
+          </div>
+        </div>
+        <div style="margin-top: 10px; font-size: 12px; color: var(--text-secondary); display: flex; flex-wrap: wrap; gap: 16px;">
+          <span>节点: <code class="mono" style="color: var(--text-primary);">${nodeId}</code></span>
+          <span>IP: <code class="mono" style="color: var(--text-primary);">${nodeIp}</code></span>
+          <span id="slot_err_${esc(s.slot_id)}" style="color: var(--danger);">${esc(s.proxy_error || "")}</span>
+        </div>
+      </div>
+    `;
+  });
+  list.innerHTML = html;
+  const hint = $("slot_limit_hint");
+  if (hint) hint.textContent = `最多 ${slotMax} 个出口，当前 ${slotsCache.length} 个`;
+}
+
+async function addSlot() {
+  const select = $("slot_country_select");
+  if (!select) return;
+  const cc = select.value;
+  if (!cc) { alert("请先选择国家地区"); return; }
+  if (slotsCache.length >= slotMax) { alert(`最多同时配置 ${slotMax} 个出口`); return; }
+  if (slotsCache.some(s => String(s.country_code).toUpperCase() === String(cc).toUpperCase())) {
+    alert("该国家地区出口已存在"); return;
+  }
+  const btn = $("btn_add_slot");
+  if (btn) { btn.disabled = true; btn.style.opacity = "0.5"; }
+  try {
+    const res = await fetchWithCsrf("./api/slot/add", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ country: cc })
+    });
+    if (!res.ok) throw new Error(res.error || "添加失败");
+    select.value = "";
+    await refreshSlots();
+    render();
+  } catch(e) {
+    alert("添加出口失败: " + (e.message || e));
+  } finally {
+    if (btn) { btn.disabled = false; btn.style.opacity = ""; }
+  }
+}
+
+async function removeSlot(slotId, countryName) {
+  if (!confirm(`确定移除 ${countryName} 出口？`)) return;
+  try {
+    const res = await fetchWithCsrf("./api/slot/remove", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ slot_id: slotId })
+    });
+    if (!res.ok) throw new Error(res.error || "移除失败");
+    await refreshSlots();
+    render();
+  } catch(e) {
+    alert("移除出口失败: " + (e.message || e));
+  }
+}
+
+async function renewSlot(slotId) {
+  try {
+    const res = await fetchWithCsrf("./api/slot/renew", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ slot_id: slotId })
+    });
+    if (!res.ok) throw new Error(res.error || "更新失败");
+    await refreshSlots();
+  } catch(e) {
+    alert("更新节点失败: " + (e.message || e));
+  }
+}
+
 function openCredentialsModal() {
   $("credentials_error").style.display = "none";
   $("credentials_success").style.display = "none";
@@ -5288,6 +5765,7 @@ setInterval(async () => {
       stableSortNodes();
       updateCountryFilter();
       render();
+      refreshSlots();
     } catch(e) {}
   }
 }, 10000);
@@ -5617,6 +6095,56 @@ def check_proxy_health() -> dict[str, Any]:
     except Exception as e:
         return {"ok": False, "error": f"出口连接测试异常: {e}"}
 
+def check_slot_proxy_health(slot: Slot) -> dict[str, Any]:
+    dev = slot.tun_device()
+    if not Path(f"/sys/class/net/{dev}").exists():
+        return {"ok": False, "error": f"[错误代码 3004] [ERR_ROUTE_DEV_NOT_FOUND] 虚拟网卡 {dev} 未启用"}
+
+    targets = ["http://ip.sb", "http://api.ipify.org"]
+    for url in targets:
+        host = url.split("://", 1)[1].split("/", 1)[0]
+        port = 80
+        started = time.time()
+        sock = None
+        try:
+            sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+            sock.settimeout(5)
+            try:
+                sock.setsockopt(socket.SOL_SOCKET, socket.SO_BINDTODEVICE, dev.encode("utf-8"))
+            except OSError as e:
+                if "operation not permitted" in str(e).lower() or e.errno == 1:
+                    return {"ok": False, "error": f"绑定 {dev} 权限不足，请以 root 权限运行"}
+                if "no such device" in str(e).lower() or e.errno == 19:
+                    return {"ok": False, "error": f"虚拟网卡 {dev} 不存在"}
+                raise
+            sock.connect((host, port))
+            payload = f"GET / HTTP/1.1\r\nHost: {host}\r\nUser-Agent: curl/8.0\r\nAccept: */*\r\nConnection: close\r\n\r\n".encode()
+            sock.sendall(payload)
+            data = b""
+            while True:
+                chunk = sock.recv(4096)
+                if not chunk:
+                    break
+                data += chunk
+                if len(data) > 65536:
+                    break
+            latency_ms = int((time.time() - started) * 1000)
+            if data.startswith(b"HTTP/1.1 200") or data.startswith(b"HTTP/1.0 200"):
+                import re as _re
+                ip_match = _re.search(rb"\b(\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3})\b", data)
+                ip = ip_match.group(1).decode() if ip_match else dev
+                return {"ok": True, "ip": ip, "latency_ms": latency_ms}
+            return {"ok": False, "error": f"出口 HTTP 测试失败 (status 非 200)"}
+        except Exception:
+            continue
+        finally:
+            if sock is not None:
+                try:
+                    sock.close()
+                except Exception:
+                    pass
+    return {"ok": False, "error": "per-slot 出口检测失败 (ip.sb / api.ipify.org 均无法通过该隧道连通)"}
+
 def background_proxy_checker() -> None:
     global last_checker_heartbeat, is_connecting
     time.sleep(30)
@@ -5627,81 +6155,133 @@ def background_proxy_checker() -> None:
                 time.sleep(5)
                 continue
 
-            res = check_proxy_health()
-            if res["ok"]:
-                set_state(
-                    proxy_ok=True,
-                    proxy_ip=res["ip"],
-                    proxy_latency_ms=res["latency_ms"],
-                    proxy_error=""
-                )
-                log_to_json("INFO", "Proxy", f"代理可用，IP: {res['ip']}, 延迟: {res['latency_ms']} ms")
-            else:
-                error_msg = res.get("error", "未知错误")
-                if active_openvpn_node_id:
-                    print(f"[警告] {LOCAL_PROXY_PORT} 端口本地代理当前不可用！原因: {error_msg}", flush=True)
-                    log_to_json("WARNING", "Proxy", f"代理不可用: {error_msg}")
-                set_state(
-                    proxy_ok=False,
-                    proxy_ip="-",
-                    proxy_latency_ms=0,
-                    proxy_error=error_msg
-                )
+            with _slot_lock:
+                active_slots = [s for s in node_pool.values() if s.state == "connected"]
 
-                # If we intended to have an active VPN node but proxy failed, trigger auto-switch
-                if active_openvpn_node_id:
-                    ui_cfg = _cached_load_ui_config()
-                    routing_mode = ui_cfg.get("routing_mode", "auto")
-                    if routing_mode != "fixed_ip":
-                        with lock:
-                            nodes = read_nodes()
-                            active_node = next((n for n in nodes if n.get("id") == active_openvpn_node_id), None)
-                            if active_node:
-                                mark_blacklisted(active_node, f"代理连通性检测失败: {error_msg}")
-                                active_node["probe_status"] = "unavailable"
-                                write_json(NODES_FILE, nodes)
-                        auto_switch_node()
+            if active_slots:
+                for slot in active_slots:
+                    if slot.is_connecting:
+                        continue
+                    res = check_slot_proxy_health(slot)
+                    if res["ok"]:
+                        with _slot_lock:
+                            slot.proxy_ok = True
+                            slot.proxy_ip = res["ip"]
+                            slot.proxy_error = ""
+                        log_to_json("INFO", "Proxy", f"[{slot.slot_id}] 代理可用，出口 IP: {res['ip']}, 延迟: {res['latency_ms']} ms")
                     else:
-                        print(f"[代理守护线程] 固定 IP 模式下代理不可用，正在尝试重启连接同一节点: {active_openvpn_node_id}", flush=True)
-                        is_connecting = False
-                        try:
-                            connect_node(active_openvpn_node_id)
-                        except Exception as e:
-                            print(f"[代理守护线程] 重启固定节点失败: {e}", flush=True)
+                        error_msg = res.get("error", "未知错误")
+                        with _slot_lock:
+                            slot.proxy_ok = False
+                            slot.proxy_ip = "-"
+                            slot.proxy_error = error_msg
+                        log_to_json("WARNING", "Proxy", f"[{slot.slot_id}] 代理不可用: {error_msg}")
+                        mark_blacklisted_from_slot(slot, f"代理连通性检测失败: {error_msg}")
+                        auto_switch_node_for_slot(slot)
+            else:
+                res = check_proxy_health()
+                if res["ok"]:
+                    set_state(
+                        proxy_ok=True,
+                        proxy_ip=res["ip"],
+                        proxy_latency_ms=res["latency_ms"],
+                        proxy_error=""
+                    )
+                    log_to_json("INFO", "Proxy", f"代理可用，IP: {res['ip']}, 延迟: {res['latency_ms']} ms")
+                else:
+                    error_msg = res.get("error", "未知错误")
+                    if active_openvpn_node_id:
+                        print(f"[警告] {LOCAL_PROXY_PORT} 端口本地代理当前不可用！原因: {error_msg}", flush=True)
+                        log_to_json("WARNING", "Proxy", f"代理不可用: {error_msg}")
+                    set_state(
+                        proxy_ok=False,
+                        proxy_ip="-",
+                        proxy_latency_ms=0,
+                        proxy_error=error_msg
+                    )
+                    if active_openvpn_node_id:
+                        ui_cfg = _cached_load_ui_config()
+                        routing_mode = ui_cfg.get("routing_mode", "auto")
+                        if routing_mode != "fixed_ip":
+                            with lock:
+                                nodes = read_nodes()
+                                active_node = next((n for n in nodes if n.get("id") == active_openvpn_node_id), None)
+                                if active_node:
+                                    mark_blacklisted(active_node, f"代理连通性检测失败: {error_msg}")
+                                    active_node["probe_status"] = "unavailable"
+                                    write_json(NODES_FILE, nodes)
+                            auto_switch_node()
+                        else:
+                            print(f"[代理守护线程] 固定 IP 模式下代理不可用，正在尝试重启连接同一节点: {active_openvpn_node_id}", flush=True)
+                            is_connecting = False
+                            try:
+                                connect_node(active_openvpn_node_id)
+                            except Exception as e:
+                                print(f"[代理守护线程] 重启固定节点失败: {e}", flush=True)
         except Exception as e:
             print(f"[错误] 代理后台检测发生异常: {e}", flush=True)
             log_to_json("ERROR", "Proxy", f"检测守护线程发生异常: {e}")
         time.sleep(30)
+
+def mark_blacklisted_from_slot(slot: Slot, reason: str) -> None:
+    if not slot.node_id:
+        return
+    nodes = read_nodes()
+    active_node = next((n for n in nodes if n.get("id") == slot.node_id), None)
+    if active_node:
+        mark_blacklisted(active_node, reason)
+        active_node["probe_status"] = "unavailable"
+        with lock:
+            write_json(NODES_FILE, nodes)
 
 def active_node_pinger() -> None:
     global last_pinger_heartbeat, last_active_ping_time, last_active_latency
     while True:
         last_pinger_heartbeat = time.time()
         try:
-            if active_openvpn_running() and active_openvpn_node_id:
+            with _slot_lock:
+                active_slots = [s for s in node_pool.values() if s.state == "connected" and s.running()]
+
+            for slot in active_slots:
+                ip = slot.node_ip
+                if not ip:
+                    continue
                 nodes = read_nodes()
-                node = next((n for n in nodes if n.get("id") == active_openvpn_node_id), None)
-                if node:
-                    ip = node.get("ip") or node.get("remote_host")
-                    port = parse_int(node.get("remote_port"))
-                    fallback = parse_int(node.get("ping"))
-                    if ip:
-                        latency = vpn_utils.ping_latency_ms(ip, port, fallback)
-                        if latency > 0:
-                            last_active_latency = latency
-                            last_active_ping_time = time.time()
-                            set_state(active_node_latency=f"{latency} ms")
+                node = next((n for n in nodes if n.get("id") == slot.node_id), None)
+                port = parse_int(node.get("remote_port")) if node else 0
+                fallback = parse_int(node.get("ping")) if node else 0
+                if ip:
+                    latency = vpn_utils.ping_latency_ms(ip, port, fallback)
+                    if latency > 0:
+                        with _slot_lock:
+                            slot.latency_ms = latency
+                            slot.last_heartbeat = time.time()
+
+            if not active_slots:
+                if active_openvpn_running() and active_openvpn_node_id:
+                    nodes = read_nodes()
+                    node = next((n for n in nodes if n.get("id") == active_openvpn_node_id), None)
+                    if node:
+                        ip = node.get("ip") or node.get("remote_host")
+                        port = parse_int(node.get("remote_port"))
+                        fallback = parse_int(node.get("ping"))
+                        if ip:
+                            latency = vpn_utils.ping_latency_ms(ip, port, fallback)
+                            if latency > 0:
+                                last_active_latency = latency
+                                last_active_ping_time = time.time()
+                                set_state(active_node_latency=f"{latency} ms")
+                            else:
+                                set_state(active_node_latency="检测超时")
                         else:
                             set_state(active_node_latency="检测超时")
                     else:
                         set_state(active_node_latency="检测超时")
+                elif is_connecting:
+                    set_state(active_node_latency="测试中...")
                 else:
-                    set_state(active_node_latency="检测超时")
-            elif is_connecting:
-                set_state(active_node_latency="测试中...")
-            else:
-                if active_openvpn_node_id:
-                    set_state(active_node_latency="无活动连接")
+                    if active_openvpn_node_id:
+                        set_state(active_node_latency="无活动连接")
         except Exception as e:
             print(f"[ERROR] active_node_pinger error: {e}", flush=True)
         time.sleep(10)
@@ -5837,6 +6417,17 @@ class Handler(BaseHTTPRequestHandler):
                     del stripped["config_text"]
                 stripped_nodes.append(stripped)
             self.send_json({"nodes": stripped_nodes, "state": get_state()})
+        elif effective_path == "/api/slots":
+            with _slot_lock:
+                slots = [s.to_dict() for s in node_pool.values()]
+            ui_cfg = _cached_load_ui_config()
+            self.send_json({
+                "ok": True,
+                "slots": slots,
+                "max_slots": MAX_SLOTS,
+                "slot_countries": ui_cfg.get("slot_countries", []),
+                "countries": vpn_utils.COUNTRY_TRANSLATIONS,
+            })
         elif effective_path.startswith("/configs/"):
             filename = urllib.parse.unquote(effective_path.removeprefix("/configs/"))
             with lock:
@@ -5932,6 +6523,15 @@ class Handler(BaseHTTPRequestHandler):
                 "details": f"上次心跳: {time.strftime('%Y-%m-%d %H:%M:%S', time.localtime(last_pinger_heartbeat)) if last_pinger_heartbeat > 0 else '等待启动'}",
                 "error": "" if pinger_ok else "线程可能已中止，无法实时刷新活动节点的 Ping 延迟。"
             }
+            with _slot_lock:
+                slot_count = len(node_pool)
+                connected_slot_count = sum(1 for s in node_pool.values() if s.state == "connected")
+            slot_status = {
+                "name": "多地区出口",
+                "status": "running" if slot_count > 0 else "stopped",
+                "details": f"出口数: {connected_slot_count}/{slot_count} 已连接",
+                "error": "" if slot_count == 0 or connected_slot_count == slot_count else f"{slot_count - connected_slot_count} 个出口处于异常或连接中状态"
+            }
             self.send_json({
                 "ok": True,
                 "services": [
@@ -5940,7 +6540,8 @@ class Handler(BaseHTTPRequestHandler):
                     openvpn_status,
                     collector_status,
                     checker_status,
-                    pinger_status
+                    pinger_status,
+                    slot_status
                 ]
             })
         elif effective_path == "/api/csrf_token":
@@ -6411,6 +7012,65 @@ class Handler(BaseHTTPRequestHandler):
                 self.send_json(result)
             except Exception as exc:
                 self.send_json({"ok": False, "error": str(exc)}, HTTPStatus.INTERNAL_SERVER_ERROR)
+        elif effective_path == "/api/slot/add":
+            try:
+                payload = self.read_json_body()
+                country_code = str(payload.get("country") or payload.get("country_code") or "").strip().upper()
+                country = str(payload.get("country_name") or "").strip()
+                if not country_code:
+                    self.send_json({"ok": False, "error": "缺少 country 参数"})
+                    return
+                if country_code not in vpn_utils.COUNTRY_TRANSLATIONS and not country:
+                    country = country_code
+                slot = create_slot(country or country_code, country_code)
+                ui_cfg = _cached_load_ui_config()
+                slot_countries = list(ui_cfg.get("slot_countries", []))
+                if country_code not in slot_countries:
+                    slot_countries.append(country_code)
+                ui_cfg["slot_countries"] = slot_countries
+                auth_file = DATA_DIR / "ui_auth.json"
+                with lock:
+                    DATA_DIR.mkdir(exist_ok=True, parents=True)
+                    write_json(auth_file, ui_cfg)
+                threading.Thread(target=_add_slot_connect, args=(slot, country_code), daemon=True).start()
+                self.send_json({"ok": True, "slot": slot.to_dict()})
+            except Exception as exc:
+                self.send_json({"ok": False, "error": str(exc)}, HTTPStatus.INTERNAL_SERVER_ERROR)
+        elif effective_path == "/api/slot/remove":
+            try:
+                payload = self.read_json_body()
+                slot_id = str(payload.get("slot_id") or "").strip()
+                if not slot_id:
+                    self.send_json({"ok": False, "error": "缺少 slot_id 参数"})
+                    return
+                destroy_slot(slot_id)
+                ui_cfg = _cached_load_ui_config()
+                with _slot_lock:
+                    remaining = [s.country_code for s in node_pool.values()]
+                ui_cfg["slot_countries"] = remaining
+                auth_file = DATA_DIR / "ui_auth.json"
+                with lock:
+                    DATA_DIR.mkdir(exist_ok=True, parents=True)
+                    write_json(auth_file, ui_cfg)
+                self.send_json({"ok": True})
+            except Exception as exc:
+                self.send_json({"ok": False, "error": str(exc)}, HTTPStatus.INTERNAL_SERVER_ERROR)
+        elif effective_path == "/api/slot/renew":
+            try:
+                payload = self.read_json_body()
+                slot_id = str(payload.get("slot_id") or "").strip()
+                if not slot_id:
+                    self.send_json({"ok": False, "error": "缺少 slot_id 参数"})
+                    return
+                with _slot_lock:
+                    slot = node_pool.get(slot_id)
+                if slot is None:
+                    self.send_json({"ok": False, "error": f"未找到 slot: {slot_id}"})
+                    return
+                threading.Thread(target=auto_switch_node_for_slot, args=(slot,), daemon=True).start()
+                self.send_json({"ok": True, "message": f"正在为 {slot_id} 更新节点"})
+            except Exception as exc:
+                self.send_json({"ok": False, "error": str(exc)}, HTTPStatus.INTERNAL_SERVER_ERROR)
         else:
             self.send_json({"error": "not found"}, HTTPStatus.NOT_FOUND)
 
@@ -6467,6 +7127,7 @@ def main() -> None:
             "blacklisted_nodes": 0,
         },
     )
+    proxy_server.set_route_device_provider(_route_device_for_connection)
     threading.Thread(target=proxy_server.start_proxy_server, args=(LOCAL_PROXY_HOST, LOCAL_PROXY_PORT), daemon=True).start()
     
     # Wait for the gateway to officially start
