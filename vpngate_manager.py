@@ -256,7 +256,22 @@ def load_ui_config() -> dict[str, Any]:
                 write_json(auth_file, config)
             except Exception:
                 pass
-                
+
+        # 多 Slot 编排：允许通过环境变量覆盖本进程的"地区/隧道/路由表/fwmark"。
+        # 仅影响本次内存中的配置，不写回存储文件（避免污染用户配置）。
+        _env_region = os.environ.get("VPNGATE_FORCE_COUNTRY")
+        if _env_region is not None:
+            config["force_country"] = _env_region
+        _env_tun = os.environ.get("VPNGATE_TUN_DEV")
+        if _env_tun is not None:
+            config["tun_dev"] = _env_tun
+        _env_table = os.environ.get("VPNGATE_ROUTE_TABLE")
+        if _env_table is not None:
+            config["route_table"] = bounded_int(_env_table, 100, 1, 65535)
+        _env_fwmark = os.environ.get("VPNGATE_FWMARK")
+        if _env_fwmark is not None:
+            config["fwmark"] = bounded_int(_env_fwmark, 0, 0, 65535)
+
         return config
 
 
@@ -1257,28 +1272,36 @@ def run_openvpn_until_ready(config_file: str, keep_alive: bool, route_nopull: bo
     return ok, message, process
 
 
-def setup_policy_routing(interface: str = "tun0") -> None:
+def setup_policy_routing(interface: str = "tun0", table: int = 100, fwmark: int = 0) -> None:
     try:
-        subprocess.run(["ip", "rule", "del", "table", "100"], capture_output=True, timeout=2)
+        subprocess.run(["ip", "rule", "del", "table", str(table)], capture_output=True, timeout=2)
     except Exception:
         pass
     try:
-        subprocess.run(["ip", "route", "flush", "table", "100"], capture_output=True, timeout=2)
+        subprocess.run(["ip", "route", "flush", "table", str(table)], capture_output=True, timeout=2)
     except Exception:
         pass
+    if fwmark:
+        try:
+            subprocess.run(["ip", "rule", "del", "fwmark", str(fwmark), "lookup", str(table)], capture_output=True, timeout=2)
+        except Exception:
+            pass
     
     success = False
     for attempt in range(1, 4):
         try:
-            subprocess.run(["ip", "route", "add", "default", "dev", interface, "table", "100"], check=True, timeout=2)
-            subprocess.run(["ip", "rule", "add", "oif", interface, "table", "100"], check=True, timeout=2)
+            subprocess.run(["ip", "route", "add", "default", "dev", interface, "table", str(table)], check=True, timeout=2)
+            subprocess.run(["ip", "rule", "add", "oif", interface, "table", str(table)], check=True, timeout=2)
+            if fwmark:
+                # 多 Slot：按 fwmark 选路（代理出向流量打标记后查本 Slot 路由表）
+                subprocess.run(["ip", "rule", "add", "fwmark", str(fwmark), "lookup", str(table)], check=True, timeout=2)
             # 配置反向路径过滤 rp_filter 为 loose 模式 (2)，防止回包被内核静默丢弃
             for proc_path in ["all", "default", interface]:
                 try:
                     subprocess.run(["sysctl", "-w", f"net.ipv4.conf.{proc_path}.rp_filter=2"], capture_output=True, timeout=2)
                 except Exception:
                     pass
-            print(f"[policy_routing] Enabled policy routing for interface {interface} (attempt {attempt} success)", flush=True)
+            print(f"[policy_routing] Enabled policy routing for interface {interface} (table {table}, fwmark {fwmark}) (attempt {attempt} success)", flush=True)
             success = True
             break
         except Exception as e:
@@ -1286,14 +1309,16 @@ def setup_policy_routing(interface: str = "tun0") -> None:
             time.sleep(1)
             
     if not success:
-        print("[路由配置失败] [错误代码 3003] [ERR_ROUTE_TABLE_ADD_FAILED] 策略路由配置失败。原因: 无法向路由表 100 添加默认路由，这可能会导致通过 VPN 接口的出站路由无法正常解析。请检查系统是否支持策略路由、iproute2 工具是否完整，以及是否具有 root 权限。", flush=True)
-        log_to_json("ERROR", "Routing", "[错误代码 3003] [ERR_ROUTE_TABLE_ADD_FAILED] 策略路由配置失败。原因: 无法向路由表 100 添加默认路由")
+        print("[路由配置失败] [错误代码 3003] [ERR_ROUTE_TABLE_ADD_FAILED] 策略路由配置失败。原因: 无法向路由表添加默认路由，这可能会导致通过 VPN 接口的出站路由无法正常解析。请检查系统是否支持策略路由、iproute2 工具是否完整，以及是否具有 root 权限。", flush=True)
+        log_to_json("ERROR", "Routing", "[错误代码 3003] [ERR_ROUTE_TABLE_ADD_FAILED] 策略路由配置失败。原因: 无法向路由表添加默认路由")
 
-def cleanup_policy_routing() -> None:
+def cleanup_policy_routing(table: int = 100, fwmark: int = 0) -> None:
     try:
-        subprocess.run(["ip", "rule", "del", "table", "100"], capture_output=True, timeout=2)
-        subprocess.run(["ip", "route", "flush", "table", "100"], capture_output=True, timeout=2)
-        print("[policy_routing] Cleared policy routing table 100", flush=True)
+        subprocess.run(["ip", "rule", "del", "table", str(table)], capture_output=True, timeout=2)
+        subprocess.run(["ip", "route", "flush", "table", str(table)], capture_output=True, timeout=2)
+        if fwmark:
+            subprocess.run(["ip", "rule", "del", "fwmark", str(fwmark), "lookup", str(table)], capture_output=True, timeout=2)
+        print(f"[policy_routing] Cleared policy routing table {table}", flush=True)
     except Exception:
         pass
 
@@ -1775,6 +1800,10 @@ def connect_node(node_id: str) -> str:
         
         ui_cfg = load_ui_config()
         validate_node_allowed_by_routing(node, ui_cfg)
+        # 多 Slot：从配置读取本地区专属资源（单 Slot 时默认 tun0 / table 100 / fwmark 0）
+        slot_tun_dev = str(ui_cfg.get("tun_dev") or "tun0")
+        slot_route_table = int(ui_cfg.get("route_table") or 100)
+        slot_fwmark = int(ui_cfg.get("fwmark") or 0)
         ui_cfg["connection_enabled"] = True
         if ui_cfg.get("routing_mode") == "fixed_ip":
             ui_cfg["fixed_node_id"] = node_id
@@ -1796,7 +1825,7 @@ def connect_node(node_id: str) -> str:
             raise RuntimeError(f"Failed to write configuration: {e}") from e
 
         set_state(active_node_latency="启动核心", last_check_message="正在启动 OpenVPN Core 核心服务并建立连接...")
-        ok, message, process = run_openvpn_until_ready(str(node["config_file"]), keep_alive=True, route_nopull=True)
+        ok, message, process = run_openvpn_until_ready(str(node["config_file"]), keep_alive=True, route_nopull=True, dev=slot_tun_dev)
         if not ok or process is None:
             try:
                 if config_path.exists():
@@ -1820,7 +1849,7 @@ def connect_node(node_id: str) -> str:
             active_openvpn_node_id = node_id
         
         set_state(active_node_latency="配置路由", last_check_message="正在配置策略路由规则与流量转发...")
-        setup_policy_routing("tun0")
+        setup_policy_routing(slot_tun_dev, slot_route_table, slot_fwmark)
         
         global last_active_ping_time, last_active_latency
         last_active_ping_time = time.time()
@@ -5487,7 +5516,12 @@ URL.revokeObjectURL(url);
 </div>
 </body></html>"""
 
-def check_proxy_health() -> dict[str, Any]:
+def check_proxy_health(port: int | None = None, dev: str | None = None) -> dict[str, Any]:
+    # 多 Slot：未显式传设备时，使用当前进程配置（编排器按地区注入 tun_dev）
+    if port is None:
+        port = LOCAL_PROXY_PORT
+    if dev is None:
+        dev = str(_cached_load_ui_config().get("tun_dev") or "tun0")
     # 1. 检测代理服务端口是否在监听
     is_ipv6 = ":" in LOCAL_PROXY_HOST
     af = socket.AF_INET6 if is_ipv6 else socket.AF_INET
@@ -5522,12 +5556,12 @@ def check_proxy_health() -> dict[str, Any]:
             except Exception:
                 pass
 
-    # 2. 检测虚拟网卡 tun0 是否存在 (Linux 下)
-    tun_path = Path("/sys/class/net/tun0")
+    # 2. 检测虚拟网卡是否存在 (Linux 下)
+    tun_path = Path(f"/sys/class/net/{dev}")
     if sys.platform.startswith("linux") and not tun_path.exists():
         return {
             "ok": False,
-            "error": "[错误代码 3004] [ERR_ROUTE_DEV_NOT_FOUND] VPN 虚拟网卡 (tun0) 未启用，请确保当前已成功连接 VPN 节点"
+            "error": f"[错误代码 3004] [ERR_ROUTE_DEV_NOT_FOUND] VPN 虚拟网卡 ({dev}) 未启用，请确保当前已成功连接 VPN 节点"
         }
 
     # 3. 使用 curl 通过本地 SOCKS5 代理接口测试 IP 与实际延迟

@@ -20,6 +20,19 @@ def parse_positive_int(value: str | None, default: int) -> int:
 MAX_PROXY_CONNECTIONS = parse_positive_int(os.environ.get("LOCAL_PROXY_MAX_CONNECTIONS"), 256)
 proxy_connection_sem = threading.BoundedSemaphore(MAX_PROXY_CONNECTIONS)
 
+# 多 Slot：出向套接字绑定的虚拟网卡设备（SO_BINDTODEVICE）。
+# 编排器通过环境变量 VPNGATE_TUN_DEV 为每个地区子进程指定独立 tun 设备，
+# 从而实现按地区隔离的出网隧道。单 Slot 时默认为 tun0，行为保持不变。
+_BIND_DEVICE = (os.environ.get("VPNGATE_TUN_DEV") or "tun0").encode("utf-8") or b"tun0"
+DEVICE_NAME = _BIND_DEVICE.decode("utf-8", errors="replace")
+
+
+def set_bind_device(dev: str) -> None:
+    """运行时切换出向绑定设备（供测试或非 env 注入场景使用）。"""
+    global _BIND_DEVICE, DEVICE_NAME
+    _BIND_DEVICE = (dev or "tun0").encode("utf-8") or b"tun0"
+    DEVICE_NAME = _BIND_DEVICE.decode("utf-8", errors="replace")
+
 def parse_int(value: Any) -> int:
     try:
         return int(value)
@@ -110,12 +123,12 @@ def dns_query_over_tun0(host: str, qtype: int, dns_server: str, timeout: float) 
         sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
         sock.settimeout(timeout)
         try:
-            sock.setsockopt(socket.SOL_SOCKET, socket.SO_BINDTODEVICE, b"tun0")
+            sock.setsockopt(socket.SOL_SOCKET, socket.SO_BINDTODEVICE, _BIND_DEVICE)
         except OSError as e:
             if "operation not permitted" in str(e).lower() or e.errno == 1:
-                print("[DNS 绑定失败] [错误代码 3006] DNS 解析绑定 tun0 权限不足，请确保程序以 root 权限运行！", flush=True)
+                print(f"[DNS 绑定失败] [错误代码 3006] DNS 解析绑定 {DEVICE_NAME} 权限不足，请确保程序以 root 权限运行！", flush=True)
             elif "no such device" in str(e).lower() or e.errno == 19:
-                print("[DNS 绑定失败] [错误代码 3004] DNS 解析绑定 tun0 失败，网卡设备不存在，请检查 VPN 连接！", flush=True)
+                print(f"[DNS 绑定失败] [错误代码 3004] DNS 解析绑定 {DEVICE_NAME} 失败，网卡设备不存在，请检查 VPN 连接！", flush=True)
             return None
         sock.sendto(packet, (dns_server, 53))
         resp, _ = sock.recvfrom(4096)
@@ -205,13 +218,13 @@ def create_connection(address: tuple[str, int], timeout: float = 20) -> socket.s
         try:
             sock = socket.socket(af, socktype, proto)
             sock.settimeout(timeout)
-            sock.setsockopt(socket.SOL_SOCKET, socket.SO_BINDTODEVICE, b"tun0")
+            sock.setsockopt(socket.SOL_SOCKET, socket.SO_BINDTODEVICE, _BIND_DEVICE)
             sock.connect(sa)
             return sock
         except OSError as e:
             err = e
             if "operation not permitted" in str(e).lower() or e.errno == 1:
-                err = OSError("[错误代码 3006] [ERR_PROXY_BIND_TUN_PERM_DENIED] 绑定虚拟网卡 tun0 失败，权限不足！必须以 root 权限运行，或者进程缺少 CAP_NET_RAW 权限。")
+                err = OSError(f"[错误代码 3006] [ERR_PROXY_BIND_TUN_PERM_DENIED] 绑定虚拟网卡 {DEVICE_NAME} 失败，权限不足！必须以 root 权限运行，或者进程缺少 CAP_NET_RAW 权限。")
             elif "no such device" in str(e).lower() or e.errno == 19:
                 err = OSError("[错误代码 3004] [ERR_ROUTE_DEV_NOT_FOUND] 绑定虚拟网卡 tun0 失败，找不到设备！这通常是因为 OpenVPN 核心未能成功连接或已被异常终止。")
             if sock is not None:
