@@ -460,6 +460,31 @@ def print_status():
             print_line(format_line("出口 IP (出站)", f"{red}[不可用 - {proxy_err}]{reset}"))
     else:
         print_line(format_line("节点状态", "无活动连接"))
+    
+    # 多区域出口状态
+    slot_summary = state.get("slot_summary", [])
+    if slot_summary:
+        print_line()
+        print_line("【多地区出口状态】")
+        for s in slot_summary:
+            country_label = s.get("country", s.get("country_code", ""))
+            state_str = s.get("state", "")
+            if state_str == "connected":
+                badge = "[绿][已连接]"
+            elif state_str == "connecting":
+                badge = "[黄][连接中]"
+            elif state_str == "failed":
+                badge = "[红][失败]"
+            else:
+                badge = "[灰][空闲]"
+            tun = s.get("tun_device", "?")
+            lat = s.get("latency_ms", 0)
+            lat_str = f"[{lat} ms]" if lat else "[...]"
+            node_ip = s.get("node_ip", "") or "-"
+            proxy_ok_slot = s.get("proxy_ok", False)
+            p_ip = s.get("proxy_ip", "-") if proxy_ok_slot else "-"
+            p_ok = "进度" if proxy_ok_slot else " 失检"
+            print_line(f"[  ] {badge} [{country_label}] [{tun}] IP: [{node_ip}] 延迟: {lat_str} {p_ok}")
     print_line()
     local_proxy = state.get("local_proxy", f"http://127.0.0.1:{proxy_port}")
     import urllib.parse
@@ -1256,6 +1281,7 @@ fi
 echo -e "  * 网页管理账号:  ${YELLOW}${USERNAME}${PLAIN}"
 echo -e "  * 网页管理密码:  ${YELLOW}${PASSWORD}${PLAIN}"
 echo -e "  * HTTP/SOCKS5 代理端口:  ${BLUE}http://127.0.0.1:${PROXY_PORT}/${PLAIN}  或  ${BLUE}http://[::1]:${PROXY_PORT}/${PLAIN}"
+echo -e "  * 多地区出口:  登录面板后在「多地区出口」中选择国家即可添加独立出口（最多 5 个，自动负载均衡）"
 echo -e " --------------------------------------------------------"
 echo -e "  * 快速状态指令:   ${YELLOW}ml status${PLAIN}  或  ${YELLOW}ml${PLAIN}"
 echo -e "  * 查看实时日志:   ${YELLOW}ml logs${PLAIN}"

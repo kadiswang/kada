@@ -7,7 +7,7 @@ Bilingual: [中文](#中文) | [English](#english)
 <a name="中文"></a>
 ## 中文 (Chinese)
 
-AimiliVPN 是一款基于官方 VPNGate 开放协议的高性能、零依赖 VPN 代理网关。它以纯 Python 标准库编写，内置美观响应式的管理网页，提供智能并发测速、多路由模式、出站代理网关、实时日志等强大功能。
+AimiliVPN 是一款基于官方 VPNGate 开放协议的高性能、零依赖 VPN 代理网关。它以纯 Python 标准库编写，内置美观响应式的管理网页，提供智能并发测速、多节点并发出口、多路由模式、出站代理网关、实时日志等强大功能。
 
 ---
 
@@ -56,6 +56,7 @@ bash <(curl -Ls https://raw.githubusercontent.com/kadiswang/aimili-vpngate/main/
    - **智能自动配置**（推荐）：如果当前连接的节点失效，系统会在数秒内自动漂移连接至其他备用健康节点，无需手动干预。
    - **固定国家地区**：只选择指定国家（如日本 JP、韩国 KR、美国 US）的最佳节点。
    - **固定 IP 节点**：始终锁定连接到这一个特定节点。
+   - **多地区出口**：在管理面板中添加多个国家/地区的出口（最多 5 个），系统会同时建立多个独立的 OpenVPN 隧道（tun0~tun4），流量自动负载均衡分配到不同出口，节点失效自动切换。
 
 #### 第三步：使用本机代理 (核心步骤)
 为了防止代理端口暴露至公网被恶意扫描和滥用，AimiliVPN 的双效代理服务（默认端口 **`7928`**，自适应支持 SOCKS5 和 HTTP 协议）**默认仅绑定在本地回环地址（`127.0.0.1`）**，只接收 VPS 本机上的流量，不对外机提供代理。
@@ -84,13 +85,17 @@ bash <(curl -Ls https://raw.githubusercontent.com/kadiswang/aimili-vpngate/main/
 
 ### 🛠️ 核心功能与操作说明
 
-* **合并操作面板**：将“更新节点”与“立即检测补齐”合并，一键触发多线程拉取与测速。
+* **合并操作面板**：将"更新节点"与"立即检测补齐"合并，一键触发多线程拉取与测速。
+* **多地区出口面板**：
+  - **多节点并发出口**：在管理面板中选择不同国家/地区，系统会自动建立多个独立的 OpenVPN 隧道（最多 5 个出口，tun0~tun4），流量轮询负载均衡分布到各出口。
+  - **出口自动切换**：每个地区的出口节点失效后自动切换至该地区最佳备用节点，不影响其他地区的连接。
+  - **独立状态监控**：每个出口独立显示延迟、出口 IP、连接状态，可随时添加/移除/更新节点。
 * **网关状态面板**：
-  - **系统诊断**：检测网关心跳及后台各个子守护线程（网页服务、VPN连接管理、出站网关服务）是否正常运行。若有脚本未运行，会提示具体的异常原因。
-  - **本地代理出口检测**：在网页端直接一键检测 VPS 后台对海外的实际连通状况，并回显真实的代理出站 IP 和所在地理位置。
+  - **系统诊断**：检测网关心跳及后台各个子守护线程（网页服务、VPN连接管理、出站网关服务、多地区出口服务）是否正常运行。若有运行异常，会提示具体的异常原因。
+  - **本地代理出口检测**：在网页端一键检测本机代理对海外的连通状况，回显真实的出站 IP 和所在地理位置。
 * **日志追踪面板**：
-  - **分类过滤**：可精准筛选查看特定功能的日志（如 VPN 连接日志、API 请求日志、系统异常等）。
-  - **实时滚动与管理**：日志实时滚动加载，支持一键复制代码、一键导出 `.log` 日志文件到本地。
+  - **分类过滤**：可精准筛选 VPS 详细运行日志（如 VPN 连接日志、API 请求日志、系统异常等）。
+  - **实时滚动与管理**：日志实时加载，支持一键复制内容、一键导出 `.log` 日志文件到本地。
 
 ---
 
@@ -163,7 +168,7 @@ Run the corresponding command on your Linux VPS as root:
 
 #### 🌟 Stable Release (main branch)
 ```bash
-bash <(curl -Ls https://raw.githubusercontent.com/kadiswang/aimili-vpngate/260621-refactor-ui-light-theme/install.sh)
+bash <(curl -Ls https://raw.githubusercontent.com/kadiswang/aimili-vpngate/main/install.sh)
 ```
 
 > 💡 **Quick Note**: Once installed, copy the printed URL from the terminal to access the Web UI. Type the `ml` command in the terminal to summon the interactive CLI management console.
@@ -179,6 +184,7 @@ Open your browser and navigate to the printed URL (e.g. `http://your_vps_ip:8787
 1. Wait for the program to complete its first automatic node speed benchmarks.
 2. Under "Admin", you can trigger node fetching. The backend concurrently tests official VPNGate nodes and ranks them by latency.
 3. Switch routes mode (Smart Auto, Specific Region, or Specific Server Node) according to your needs.
+4. **Multi-Region Egress**: In the management panel, add multiple country/region egress nodes (up to 5), and the system will establish multiple independent OpenVPN tunnels concurrently (tun0~tun4). Traffic is automatically load-balanced across all exits, and each region's node auto-switches on failure.
 
 #### Step 3: Use Localhost Proxy (Core Step)
 To prevent unauthorized scanning and abuse of the proxy port on the public internet, the built-in HTTP/SOCKS5 proxy server (default port **`7928`**) **binds to localhost (`127.0.0.1`) by default**. It is designed to route traffic generated locally on the VPS, rather than acting as a public proxy server.
