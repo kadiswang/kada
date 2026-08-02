@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import json
 import os
+import socket
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any
@@ -21,7 +22,7 @@ from slot_manager import SlotOrchestrator
 
 ROOT_DIR = Path(__file__).resolve().parent
 UI_HOST = os.environ.get("UI_HOST", "::")
-UI_PORT = int(os.environ.get("UI_PORT", "8790"))
+UI_PORT = int(os.environ.get("UI_PORT", "8787"))
 BASE_PROXY_PORT = int(os.environ.get("LOCAL_PROXY_PORT", "7928"))
 DATA_DIR = Path(os.environ.get("VPNGATE_DATA_DIR") or ROOT_DIR / "vpngate_data").resolve()
 
@@ -39,53 +40,70 @@ ORCH: SlotOrchestrator | None = None
 def render_page() -> str:
     assert ORCH is not None
     regions = ORCH.status()
-    rows = ""
     if not regions:
-        rows = "<tr><td colspan='6' style='text-align:center;color:#888'>尚未配置任何地区，请在下方添加</td></tr>"
-    for r in regions:
-        link = f"http://127.0.0.1:{r['ui_port']}/" if ":" not in UI_HOST else f"http://[::1]:{r['ui_port']}/"
-        alive = "🟢 运行中" if r["alive"] else "🔴 已停止"
-        rows += (
-            f"<tr><td>{r['slot_id']}</td><td>{r['region'] or '(全部)'}</td>"
-            f"<td>{alive}</td><td>{r['tun_dev']}</td><td>{r['proxy_port']}</td>"
-            f"<td><a href='{link}' target='_blank'>管理后台 ({r['ui_port']})</a> "
-            f"<button onclick=\"del('{r['slot_id']}')\">删除</button></td></tr>"
-        )
+        tabs = "<div class='empty'>尚未配置任何地区，请在右上角添加</div>"
+        frames = ""
+    else:
+        tabs = ""
+        frames = ""
+        for i, r in enumerate(regions):
+            active = " active" if i == 0 else ""
+            status = "🟢" if r["alive"] else "🔴"
+            label = r["region"] or r["slot_id"]
+            tabs += (
+                f"<button class='tab{active}' id='tab_{r['slot_id']}' "
+                f"onclick=\"selectRegion('{r['slot_id']}')\">{label} {status} "
+                f"<span class='x' onclick=\"event.stopPropagation();del('{r['slot_id']}')\">×</span></button>"
+            )
+            display = "block" if i == 0 else "none"
+            src = f"http://127.0.0.1:{r['ui_port']}/"
+            frames += (
+                f"<iframe id='frame_{r['slot_id']}' class='region-frame' "
+                f"style='display:{display}' src='{src}'></iframe>"
+            )
     return f"""<!DOCTYPE html>
 <html lang="zh">
 <head><meta charset="utf-8"><title>AimiliVPN 多地区管理</title>
 <style>
- body{{font-family:-apple-system,system-ui,'Microsoft YaHei',sans-serif;margin:24px;background:#f6f7fb;color:#222}}
- h1{{font-size:20px}} table{{border-collapse:collapse;width:100%;background:#fff;border-radius:8px;overflow:hidden;box-shadow:0 1px 4px rgba(0,0,0,.08)}}
- th,td{{padding:10px 12px;border-bottom:1px solid #eee;text-align:left;font-size:14px}}
- th{{background:#fafbfc;color:#555}} a{{color:#2563eb;text-decoration:none}}
- button{{border:1px solid #ddd;background:#fff;border-radius:6px;padding:4px 10px;cursor:pointer}}
- .card{{background:#fff;border-radius:8px;padding:16px;margin-bottom:16px;box-shadow:0 1px 4px rgba(0,0,0,.08)}}
- input{{padding:6px 8px;border:1px solid #ddd;border-radius:6px;margin-right:8px}}
+ body{{font-family:-apple-system,system-ui,'Microsoft YaHei',sans-serif;margin:0;background:#f6f7fb;color:#222;height:100vh;display:flex;flex-direction:column}}
+ header{{padding:12px 20px;background:#fff;border-bottom:1px solid #eee;display:flex;align-items:center;gap:16px;flex-wrap:wrap}}
+ h1{{font-size:18px;margin:0;white-space:nowrap}}
+ .tabs{{display:flex;gap:8px;flex-wrap:wrap}}
+ .tab{{border:1px solid #ddd;background:#fff;border-radius:18px;padding:6px 14px;cursor:pointer;font-size:14px}}
+ .tab.active{{background:#2563eb;color:#fff;border-color:#2563eb}}
+ .tab .x{{margin-left:6px;opacity:.6}}
+ .tab .x:hover{{opacity:1}}
+ .empty{{color:#888;padding:8px 0}}
+ .add{{margin-left:auto;display:flex;gap:8px;align-items:center}}
+ .add input{{padding:6px 8px;border:1px solid #ddd;border-radius:6px}}
+ .add button{{border:none;background:#2563eb;color:#fff;border-radius:6px;padding:6px 14px;cursor:pointer}}
+ .frames{{flex:1;position:relative;min-height:0}}
+ .region-frame{{position:absolute;inset:0;width:100%;height:100%;border:none;background:#fff}}
 </style></head>
 <body>
-<h1>AimiliVPN · 多地区出口管理</h1>
-<div class="card">
- <p style="color:#666;margin:0 0 12px">每个地区是独立的 VPN 隧道，互不影响。代理端口 {BASE_PROXY_PORT} 起、管理端口 {UI_PORT} 起分配给各地区。</p>
- <table><thead><tr><th>地区ID</th><th>地区/国家</th><th>状态</th><th>tun</th><th>代理端口</th><th>操作</th></tr></thead>
- <tbody>{rows}</tbody></table>
-</div>
-<div class="card">
- <h3 style="margin-top:0">添加地区出口</h3>
- <input id="region" placeholder="国家名，如 Japan / United States" />
- <input id="slotId" placeholder="地区ID（可选，如 jp）" />
- <button onclick="add()">添加</button>
- <span id="msg" style="color:#2563eb;margin-left:10px"></span>
-</div>
+<header>
+ <h1>AimiliVPN · 多地区出口</h1>
+ <div class="tabs">{tabs}</div>
+ <div class="add">
+  <input id="region" placeholder="国家名，如 Japan" />
+  <input id="slotId" placeholder="ID(可选)" style="width:90px" />
+  <button onclick="add()">添加地区</button>
+ </div>
+</header>
+<div class="frames">{frames}</div>
 <script>
+function selectRegion(id){{
+  document.querySelectorAll('.tab').forEach(t=>t.classList.remove('active'));
+  document.getElementById('tab_'+id).classList.add('active');
+  document.querySelectorAll('.region-frame').forEach(f=>f.style.display='none');
+  document.getElementById('frame_'+id).style.display='block';
+}}
 async function add(){{
   const region=document.getElementById('region').value.trim();
-  const slotId=document.getElementById('slotId').value.trim();
   if(!region){{alert('请填写国家名');return;}}
-  const r=await fetch('/api/regions',{{method:'POST',headers:{{'Content-Type':'application/json'}},body:JSON.stringify({{region,slot_id:slotId}})}});
-  const d=await r.json();
-  document.getElementById('msg').textContent=d.ok?'已添加，正在启动…':'失败：'+(d.error||'');
-  setTimeout(()=>location.reload(),1200);
+  const slotId=document.getElementById('slotId').value.trim();
+  await fetch('/api/regions',{{method:'POST',headers:{{'Content-Type':'application/json'}},body:JSON.stringify({{region,slot_id:slotId}})}});
+  location.reload();
 }}
 async function del(id){{
   if(!confirm('确定删除地区 '+id+'？将停止其隧道并清理资源'))return;
@@ -150,7 +168,12 @@ class Handler(BaseHTTPRequestHandler):
 def main() -> None:
     global ORCH
     ORCH = build_orchestrator()
-    server = ThreadingHTTPServer((UI_HOST, UI_PORT))
+    server_addr = (UI_HOST, UI_PORT)
+    try:
+        server = ThreadingHTTPServer(server_addr, Handler)
+    except (OSError, socket.gaierror):
+        # Windows / 无 IPv6 环境下 "::" 解析失败，回退到 IPv4 全接口
+        server = ThreadingHTTPServer(("0.0.0.0", UI_PORT), Handler)
     print(f"[Director] 多地区管理界面已启动: http://127.0.0.1:{UI_PORT}/", flush=True)
     try:
         server.serve_forever()

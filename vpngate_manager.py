@@ -5745,6 +5745,9 @@ class Handler(BaseHTTPRequestHandler):
         return ui_cfg.get("secret_path", "EJsW2EeBo9lY")
 
     def is_authorized(self) -> bool:
+        # 由 director 编排的本地面板内，子进程免登录（仅绑定 127.0.0.1，不外泄）
+        if os.environ.get("VPNGATE_DISABLE_AUTH") == "1":
+            return True
         ui_cfg = _cached_load_ui_config()
         pwd = ui_cfg.get("password")
         if not pwd:
@@ -5771,6 +5774,9 @@ class Handler(BaseHTTPRequestHandler):
         return False
 
     def validate_path(self) -> str:
+        # 免登录模式下直接放行根路径（供 director 内嵌框架访问）
+        if os.environ.get("VPNGATE_DISABLE_AUTH") == "1":
+            return urllib.parse.urlsplit(self.path).path
         secret_path = self.get_secret_path()
         request_path = urllib.parse.urlsplit(self.path).path
         if not secret_path:
@@ -6557,6 +6563,8 @@ def main() -> None:
     
     ui_cfg = _cached_load_ui_config()
     ui_host = ui_cfg.get("host", UI_HOST)
+    if os.environ.get("VPNGATE_DISABLE_AUTH") == "1":
+        ui_host = "127.0.0.1"  # 本地面板内的子进程仅绑定本地，避免暴露
     ui_port = bounded_int(ui_cfg.get("port"), UI_PORT, 1, 65535)
     
     print(f"UI: http://{ui_host}:{ui_port}/", flush=True)

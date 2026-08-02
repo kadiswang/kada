@@ -62,6 +62,9 @@ class RegionProcess:
         env["VPNGATE_FORCE_COUNTRY"] = self.cfg.region
         env["LOCAL_PROXY_PORT"] = str(self.proxy_port)
         env["UI_PORT"] = str(self.ui_port)
+        # 子进程由 director 在本地面板内编排：免登录且只绑本地回环，不外泄
+        env["VPNGATE_DISABLE_AUTH"] = "1"
+        env["UI_HOST"] = "127.0.0.1"
         return env
 
     def start(self) -> None:
