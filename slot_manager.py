@@ -16,6 +16,8 @@ from __future__ import annotations
 import os
 import subprocess
 import sys
+import threading
+import time
 from pathlib import Path
 from typing import Any
 
@@ -31,7 +33,8 @@ class RegionProcess:
         self.cfg = cfg
         self.base_data_dir = Path(base_data_dir)
         self.ui_port = ui_port
-        self.proxy_port = proxy_port
+        # 端口优先使用用户在配置中显式填写的值（proxy_port），未填则自动顺延
+        self.proxy_port = cfg.proxy_port if cfg.proxy_port else proxy_port
         self.proc: subprocess.Popen[str] | None = None
 
     @property
@@ -59,9 +62,10 @@ class RegionProcess:
         env["VPNGATE_TUN_DEV"] = self.cfg.tun_dev
         env["VPNGATE_ROUTE_TABLE"] = str(self.cfg.route_table)
         env["VPNGATE_FWMARK"] = "0"  # 出网由 SO_BINDTODEVICE 按 tun 设备隔离，无需 fwmark
-        env["VPNGATE_FORCE_COUNTRY"] = self.cfg.region
         env["LOCAL_PROXY_PORT"] = str(self.proxy_port)
         env["UI_PORT"] = str(self.ui_port)
+        # 所有出口共用父进程发布的共享节点池（只拉取一次官方 API）
+        env["VPNGATE_SHARED_NODES"] = str(self.base_data_dir / "shared_nodes.json")
         # 子进程由 director 在本地面板内编排：免登录且只绑本地回环，不外泄
         env["VPNGATE_DISABLE_AUTH"] = "1"
         env["UI_HOST"] = "127.0.0.1"
@@ -69,10 +73,44 @@ class RegionProcess:
         env["VPNGATE_SLOT_CHILD"] = "1"
         return env
 
+    def _seed_auth(self) -> None:
+        """在子进程数据目录中播种初始配置（国家/指定节点）。
+
+        子进程是一个完全正常的独立代理实例，国家与节点的后续调整都在它自己的
+        面板里完成（与现在单端口的体验完全一致），这里只写入创建时的初始值。
+        """
+        cfg = self.cfg
+        if not (cfg.region or cfg.fixed_node_id):
+            return
+        try:
+            from vpngate_manager import read_json, write_json
+        except Exception:
+            return
+        self.data_dir.mkdir(parents=True, exist_ok=True)
+        auth = self.data_dir / "ui_auth.json"
+        try:
+            data = read_json(auth, {}) if auth.exists() else {}
+        except Exception:
+            data = {}
+        if not isinstance(data, dict):
+            data = {}
+        if cfg.region:
+            data["force_country"] = cfg.region
+            data["routing_mode"] = "fixed_region"
+        if cfg.fixed_node_id:
+            data["fixed_node_id"] = cfg.fixed_node_id
+            data["routing_mode"] = "fixed_ip"
+        data.setdefault("connection_enabled", True)
+        try:
+            write_json(auth, data)
+        except Exception:
+            pass
+
     def start(self) -> None:
         if self.is_alive():
             return
         self.data_dir.mkdir(parents=True, exist_ok=True)
+        self._seed_auth()
         self.proc = subprocess.Popen(
             [sys.executable, str(MANAGER_MAIN)],
             env=self.build_env(),
@@ -116,6 +154,7 @@ class SlotOrchestrator:
         self.base_proxy_port = base_proxy_port
         self.regions: dict[str, RegionProcess] = {}
         self._manager = SlotManager()
+        self._publisher_started = False
 
     def _ui_port_for(self, idx: int) -> int:
         # 管理界面端口：基础端口 + 地区索引 + 100（避开 8790 附近的默认端口冲突）
@@ -124,8 +163,33 @@ class SlotOrchestrator:
     def _proxy_port_for(self, idx: int) -> int:
         return self.base_proxy_port + idx
 
+    def _publish_shared_pool(self) -> None:
+        """把父进程（默认出口）已抓取并测速的节点池发布到共享文件，
+        供所有子出口进程消费，从而实现"只拉取一次、共用一个节点池"。"""
+        try:
+            import shutil
+            src = self.base_data_dir / "nodes.json"
+            dst = self.base_data_dir / "shared_nodes.json"
+            if src.exists():
+                shutil.copyfile(src, dst)
+        except Exception:
+            pass
+
+    def _publish_loop(self) -> None:
+        while True:
+            self._publish_shared_pool()
+            time.sleep(30)
+
+    def _ensure_publisher(self) -> None:
+        if self._publisher_started:
+            return
+        self._publisher_started = True
+        self._publish_shared_pool()  # 立即发布一次，避免子进程启动时空跑
+        threading.Thread(target=self._publish_loop, daemon=True).start()
+
     def sync(self, ui_cfg: dict[str, Any]) -> None:
         """让运行中的子进程与 ui_cfg.slots 保持一致：新增/停止/保留。"""
+        self._ensure_publisher()
         desired = self._manager.from_ui_config(ui_cfg)
         desired_ids = {c.slot_id for c in desired}
 

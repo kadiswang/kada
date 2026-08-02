@@ -928,6 +928,27 @@ def row_to_node(row: dict[str, str], config_text: str) -> dict[str, Any]:
     }
 
 def fetch_candidates() -> list[dict[str, Any]]:
+    # 多出口共享节点池：若本进程被标记为"消费共享池"（即子出口进程），
+    # 直接读取父进程发布的共享节点文件，不再重复拉取官方 API，
+    # 避免每个出口各自拉取导致被 VPNGate 限流/封禁。
+    _shared = os.environ.get("VPNGATE_SHARED_NODES")
+    if _shared:
+        _shared_path = Path(_shared)
+        if _shared_path.exists():
+            try:
+                _data = read_json(_shared_path, [])
+                if _data:
+                    set_state(
+                        last_fetch_at=time.time(),
+                        last_fetch_status="ok",
+                        last_fetch_message=f"从共享节点池载入 {len(_data)} 个节点（本进程不重复拉取官方 API）",
+                    )
+                    log_to_json("INFO", "Main", f"从共享节点池载入 {len(_data)} 个节点（跳过官方 API 拉取）")
+                    return _data
+            except Exception as _e:
+                print(f"[共享节点池] 读取失败，回退到官方 API 拉取: {_e}", flush=True)
+                log_to_json("WARNING", "Main", f"共享节点池读取失败: {_e}")
+
     blacklist = load_blacklist()
     candidates: list[dict[str, Any]] = []
     seen_ips = set()
@@ -2170,17 +2191,120 @@ def maintain_valid_nodes(force: bool = False) -> str:
         maintenance_lock.release()
 
 
+def select_best_node(
+    nodes: list[dict[str, Any]],
+    country: str = "",
+    fixed_id: str = "",
+    ip_type: str = "all",
+    min_health: int = 0,
+) -> dict[str, Any] | None:
+    """从共享节点池中挑选最优节点（纯函数，便于单元测试）。
+
+    - 指定 fixed_id：仅在该节点中挑选。
+    - 指定 country：仅保留匹配国家（normalized 比较）的节点。
+    - ip_type / min_health：按类型与健康度过滤。
+    - 优先返回已被测速标记为 available 的节点；否则退回到非 unavailable 的节点。
+    """
+    if fixed_id:
+        cands = [n for n in nodes if str(n.get("id")) == str(fixed_id)]
+    elif country:
+        cands = [n for n in nodes if country_matches(n.get("country"), country)]
+    else:
+        cands = list(nodes)
+
+    if ip_type == "residential":
+        cands = [n for n in cands if n.get("ip_type") in ("residential", "mobile")]
+    elif ip_type == "hosting":
+        cands = [n for n in cands if n.get("ip_type") == "hosting"]
+
+    if min_health > 0:
+        cands = [n for n in cands if (n.get("trust_score") or 0) >= min_health]
+
+    available = [n for n in cands if n.get("probe_status") == "available"]
+    available.sort(key=probe_priority_key)
+    if available:
+        return available[0]
+
+    rest = [n for n in cands if n.get("probe_status") != "unavailable"]
+    rest.sort(key=probe_priority_key)
+    return rest[0] if rest else None
+
+
+def maintain_shared_egress() -> None:
+    """子出口进程的维护逻辑：消费父进程发布的共享节点池，挑选最优节点连接。
+
+    不拉取官方 API、不重复测速（节点可用性由父进程统一测速后共享），
+    从而满足"所有出口共用一个节点池、只拉取一次"的要求。
+    """
+    global is_connecting
+    shared = os.environ.get("VPNGATE_SHARED_NODES")
+    if not shared or not Path(shared).exists():
+        return
+    if not maintenance_lock.acquire(blocking=False):
+        return
+    try:
+        with lock:
+            if is_connecting:
+                return
+            is_connecting = True
+        ui_cfg = load_ui_config()
+        country = ui_cfg.get("force_country") or ""
+        fixed = ui_cfg.get("fixed_node_id") or ""
+        ip_type = ui_cfg.get("routing_ip_type", "all")
+        min_health = int(ui_cfg.get("min_health_score") or 0)
+
+        nodes = read_json(Path(shared), [])
+        if not nodes:
+            set_state(is_connecting=False, last_check_message="共享节点池暂无节点，等待父进程拉取...")
+            return
+
+        # 将共享池写入本进程本地节点文件，使 connect_node 能按 id 找到节点配置（含 config_text）
+        try:
+            write_json(NODES_FILE, nodes)
+        except Exception as _we:
+            print(f"[共享出口] 写入本地节点文件失败: {_we}", flush=True)
+
+        target = select_best_node(nodes, country=country, fixed_id=fixed, ip_type=ip_type, min_health=min_health)
+        if target is None:
+            set_state(is_connecting=False, last_check_message="共享节点池中没有符合过滤条件的节点")
+            return
+
+        if active_openvpn_node_id == str(target.get("id")) and active_openvpn_running():
+            is_connecting = False
+            return
+
+        try:
+            connect_node(str(target.get("id")))
+            set_state(is_connecting=False, last_check_message=f"已连接共享池节点 {target.get('id')}")
+        except Exception as exc:
+            err_msg = f"连接共享池节点 {target.get('id')} 失败: {exc}"
+            print(f"[共享出口] {err_msg}", flush=True)
+            log_to_json("ERROR", "Egress", err_msg)
+            set_state(is_connecting=False, last_check_message=err_msg)
+    finally:
+        try:
+            maintenance_lock.release()
+        except Exception:
+            pass
+
+
 def collector_loop() -> None:
     global last_collector_heartbeat
     while True:
         last_collector_heartbeat = time.time()
         success = False
         try:
-            print("[守护线程] 开始执行节点拉取与可用性检测周期任务...", flush=True)
-            log_to_json("INFO", "Main", "开始执行节点拉取与可用性检测周期任务...")
-            res = maintain_valid_nodes(force=False)
-            if "没有拉取到新节点" not in res:
-                success = True
+            if os.environ.get("VPNGATE_SHARED_NODES"):
+                # 子出口进程：消费共享节点池，不重复拉取官方 API 与测速
+                maintain_shared_egress()
+                success = active_openvpn_running()
+                log_to_json("INFO", "Main", "子出口周期维护完成（共享节点池模式）")
+            else:
+                print("[守护线程] 开始执行节点拉取与可用性检测周期任务...", flush=True)
+                log_to_json("INFO", "Main", "开始执行节点拉取与可用性检测周期任务...")
+                res = maintain_valid_nodes(force=False)
+                if "没有拉取到新节点" not in res:
+                    success = True
             log_to_json("INFO", "Main", f"周期同步与检测任务完成，结果: {res}")
         except Exception as exc:
             err_msg = f"周期节点同步任务执行异常: {exc}"
@@ -3422,7 +3546,7 @@ INDEX_HTML = r"""<!doctype html>
       </a>
       <a class="nav-item" id="nav_egress" href="javascript:void(0)" onclick="switchPage('egress')">
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 12h18M3 6h18M3 18h18"/><circle cx="12" cy="12" r="9"/></svg>
-        多地区出口
+        出站代理
       </a>
 
       <div class="sidebar-divider"></div>
@@ -4738,18 +4862,18 @@ function renderEgress() {
   const frame = $("egress_frame");
   if (!egressRegions.length) {
     if (tabs) tabs.innerHTML = "";
-    if (list) list.innerHTML = "<div style='padding:24px;color:var(--text-secondary);'>尚未配置任何地区。请在上方添加，每个地区将获得一条独立隧道，地区之间互不影响。</div>";
+    if (list) list.innerHTML = "<div style='padding:24px;color:var(--text-secondary);'>尚未配置任何出站代理。请在上方填写端口（必填）后添加；每个代理就是一套独立隧道，国家/IP 可在它自己的面板里选，所有代理共用同一份节点池。</div>";
     if (frame) frame.src = "about:blank";
     return;
   }
   if (tabs) tabs.innerHTML = egressRegions.map(function(r, i) {
     const status = r.alive ? "🟢" : "🔴";
-    const label = r.region || r.slot_id;
+    const label = r.slot_id + " :" + r.proxy_port;
     return "<button class='egress-tab" + (i === 0 ? " active" : "") + "' id='etab_" + r.slot_id + "' onclick=\"selectEgress('" + r.slot_id + "')\">" + label + " " + status + " <span class='egress-x' onclick=\"event.stopPropagation();delEgress('" + r.slot_id + "')\">×</span></button>";
   }).join("");
   if (list) list.innerHTML = egressRegions.map(function(r) {
     const status = r.alive ? "🟢 运行中" : "🔴 已停止";
-    return "<div class='egress-card'><div class='egress-card-title'>" + (r.region || r.slot_id) + "</div><div class='egress-card-meta'>状态：" + status + " ｜ tun：" + r.tun_dev + " ｜ 代理端口：" + r.proxy_port + "</div></div>";
+    return "<div class='egress-card'><div class='egress-card-title'>" + r.slot_id + "</div><div class='egress-card-meta'>状态：" + status + " ｜ 端口：" + r.proxy_port + " ｜ 国家：" + (r.region || "不限") + " ｜ tun：" + r.tun_dev + "</div></div>";
   }).join("");
   selectEgress(egressRegions[0].slot_id, true);
 }
@@ -4764,17 +4888,20 @@ function selectEgress(slotId, skipRender) {
   if (r && r.panel_url && frame) frame.src = r.panel_url;
 }
 async function addEgress() {
-  const region = $("egress_region").value.trim();
-  if (!region) { alert("请填写地区/国家名（如 Japan / United States）"); return; }
-  const slotId = $("egress_slotid").value.trim();
-  const resp = await fetchWithCsrf("./api/egress_regions", { method: "POST", body: JSON.stringify({ region: region, slot_id: slotId }) });
+  const name = $("egress_name").value.trim();
+  const port = $("egress_port").value.trim();
+  const country = $("egress_country").value.trim();
+  const node = $("egress_node").value.trim();
+  if (!port) { alert("请填写代理端口（必填，如 7929）"); return; }
+  if (!/^\d+$/.test(port)) { alert("代理端口必须是数字"); return; }
+  const resp = await fetchWithCsrf("./api/egress_regions", { method: "POST", body: JSON.stringify({ name: name, port: port, country: country, node_id: node }) });
   const data = await resp.json();
   if (!data.ok) { alert("添加失败：" + (data.error || "")); return; }
   egressRegions = data.regions || [];
   renderEgress();
 }
 async function delEgress(slotId) {
-  if (!confirm("确定删除地区 " + slotId + "？将停止其隧道并释放资源")) return;
+  if (!confirm("确定删除出站代理 " + slotId + "？将停止其隧道并释放资源")) return;
   const resp = await fetchWithCsrf("./api/egress_regions/delete", { method: "POST", body: JSON.stringify({ slot_id: slotId }) });
   const data = await resp.json();
   if (!data.ok) { alert("删除失败：" + (data.error || "")); return; }
@@ -5583,17 +5710,19 @@ URL.revokeObjectURL(url);
 
   <div id="page_egress" class="page-content" style="display:none;">
     <section class="toolbar" style="padding:20px;">
-      <h2 style="margin:0 0 8px;font-size:20px;">多地区出口</h2>
-      <p style="color:var(--text-secondary);margin:0 0 16px;line-height:1.6;">为每个地区配置一条<span style="color:var(--accent,#6366f1);font-weight:600;">独立的 VPN 隧道</span>，地区之间互不影响。下方填写国家名即可新增；代理端口从 <span id="egress_base_port">7928</span> 起自动分配，管理端口由系统分配。点击顶部地区标签可在同一页面内切换查看各地区专属管理后台。</p>
+      <h2 style="margin:0 0 8px;font-size:20px;">出站代理</h2>
+      <p style="color:var(--text-secondary);margin:0 0 16px;line-height:1.6;">手动创建多个 <span style="color:var(--accent,#6366f1);font-weight:600;">HTTP/SOCKS5 出站代理</span>，每个代理就是一套和现在一模一样的独立隧道（端口你定，国家/IP 在它自己的面板里选）。所有代理<span style="color:var(--accent,#6366f1);font-weight:600;">共用同一份节点池</span>（只拉取一次官方节点，不会重复拉取）。填写端口（必填）即可新增；国家/地区与指定节点留空则不限。点击顶部标签可在本页面内切换查看各代理专属管理后台。</p>
       <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center;margin-bottom:16px;">
-        <input id="egress_region" placeholder="国家名，如 Japan / United States" style="padding:8px 10px;border:1px solid var(--border,#e5e7eb);border-radius:8px;min-width:240px;background:var(--bg-input,#fff);color:var(--text-primary);" />
-        <input id="egress_slotid" placeholder="地区ID（可选，如 jp）" style="padding:8px 10px;border:1px solid var(--border,#e5e7eb);border-radius:8px;width:160px;background:var(--bg-input,#fff);color:var(--text-primary);" />
-        <button class="primary" onclick="addEgress()" style="padding:8px 16px;border:none;border-radius:8px;background:var(--accent,#6366f1);color:#fff;cursor:pointer;font-weight:600;">添加地区</button>
+        <input id="egress_name" placeholder="名称（可选，如 日本1）" style="padding:8px 10px;border:1px solid var(--border,#e5e7eb);border-radius:8px;min-width:160px;background:var(--bg-input,#fff);color:var(--text-primary);" />
+        <input id="egress_port" placeholder="代理端口（必填，如 7929）" style="padding:8px 10px;border:1px solid var(--border,#e5e7eb);border-radius:8px;width:200px;background:var(--bg-input,#fff);color:var(--text-primary);" />
+        <input id="egress_country" placeholder="国家/地区（可选，如 Japan）" style="padding:8px 10px;border:1px solid var(--border,#e5e7eb);border-radius:8px;min-width:200px;background:var(--bg-input,#fff);color:var(--text-primary);" />
+        <input id="egress_node" placeholder="指定节点ID（可选）" style="padding:8px 10px;border:1px solid var(--border,#e5e7eb);border-radius:8px;width:180px;background:var(--bg-input,#fff);color:var(--text-primary);" />
+        <button class="primary" onclick="addEgress()" style="padding:8px 16px;border:none;border-radius:8px;background:var(--accent,#6366f1);color:#fff;cursor:pointer;font-weight:600;">添加出站代理</button>
         <button onclick="loadEgress()" style="padding:8px 16px;border:1px solid var(--border,#e5e7eb);border-radius:8px;background:var(--bg-input,#fff);color:var(--text-primary);cursor:pointer;">刷新状态</button>
       </div>
       <div id="egress_tabs" style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:12px;"></div>
       <div id="egress_list" style="display:flex;gap:12px;flex-wrap:wrap;margin-bottom:12px;"></div>
-      <iframe id="egress_frame" class="egress-frame" src="about:blank" title="地区管理后台" style="width:100%;height:620px;border:1px solid var(--border,#e5e7eb);border-radius:10px;background:#fff;"></iframe>
+      <iframe id="egress_frame" class="egress-frame" src="about:blank" title="代理管理后台" style="width:100%;height:620px;border:1px solid var(--border,#e5e7eb);border-radius:10px;background:#fff;"></iframe>
     </section>
   </div>
 
@@ -6493,16 +6622,33 @@ class Handler(BaseHTTPRequestHandler):
         elif effective_path == "/api/egress_regions":
             try:
                 payload = self.read_json_body()
-                region = str(payload.get("region") or "").strip()
-                if not region:
-                    self.send_json({"ok": False, "error": "请填写地区/国家名（如 Japan / United States）"})
+                # 出站代理：端口由用户填写（必填）；国家/地区与指定节点可选
+                port_raw = payload.get("port")
+                port = 0
+                if port_raw not in (None, ""):
+                    try:
+                        port = int(port_raw)
+                    except (TypeError, ValueError):
+                        port = 0
+                if port and not (1 <= port <= 65535):
+                    self.send_json({"ok": False, "error": "端口需在 1-65535 之间"})
                     return
+                country = str(payload.get("country") or "").strip()
+                node_id = str(payload.get("node_id") or "").strip()
+                name = str(payload.get("name") or "").strip()
                 ui_cfg = load_ui_config()
                 slots = list(ui_cfg.get("slots") or [])
-                slot_id = str(payload.get("slot_id") or f"slot_{len(slots) + 1}").strip() or f"slot_{len(slots) + 1}"
+                slot_id = (name or f"egress_{len(slots) + 1}").strip() or f"egress_{len(slots) + 1}"
                 if any(str(s.get("slot_id")) == slot_id for s in slots):
                     slot_id = f"{slot_id}_{len(slots) + 1}"
-                slots.append({"slot_id": slot_id, "region": region, "enabled": True})
+                slot_def = {
+                    "slot_id": slot_id,
+                    "region": country,
+                    "proxy_port": port,
+                    "fixed_node_id": node_id,
+                    "enabled": True,
+                }
+                slots.append(slot_def)
                 ui_cfg["slots"] = slots
                 auth_file = DATA_DIR / "ui_auth.json"
                 with lock:
@@ -6720,7 +6866,7 @@ def main() -> None:
     print(f"Proxy: http://{LOCAL_PROXY_HOST}:{LOCAL_PROXY_PORT}", flush=True)
     log_to_json("INFO", "Main", f"UI服务已启动: http://{ui_host}:{ui_port}/")
 
-    # 多地区出口：若配置了 slots 且本进程不是地区子进程，则拉起各地区独立子进程
+    # 出站代理：若配置了 slots 且本进程不是子出口进程，则拉起各出口独立子进程
     global EGRESS_ORCH
     if os.environ.get("VPNGATE_SLOT_CHILD") != "1" and ui_cfg.get("slots"):
         try:
