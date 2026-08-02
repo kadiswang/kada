@@ -4862,8 +4862,7 @@ async function loadEgress() {
   // 用户也能看到默认的 7928 出口；之后再用最新状态刷新列表。
   renderEgress();
   try {
-    const resp = await fetchWithCsrf("./api/egress_regions");
-    const data = await resp.json();
+    const data = await fetchWithCsrf("./api/egress_regions");
     egressRegions = data.regions || [];
     renderEgress();
   } catch (e) { console.error(e); }
@@ -4872,15 +4871,22 @@ function renderEgress() {
   const list = $("egress_list");
   if (!list) return;
   let html = "";
-  // 默认出口：单独第一排（常驻，不可删除）
-  html += egressRow("默认出口（7928）", "🟢 常驻 ｜ 端口 7928 ｜ 不可删除", true, null);
+  // 已配置的出口（每排一个）
   if (!egressRegions.length) {
-    html += "<div style='padding:10px 4px;color:var(--text-secondary);font-size:13px;'>当前只有默认出口 7928。点击下方「添加出站代理」即可增加 7929、7930……（每添加一个，下方自动多出一排）</div>";
+    html += "<div style='padding:10px 4px;color:var(--text-secondary);font-size:13px;'>当前只有默认出口 7928。点击上方「添加出站代理」即可增加 7929、7930……（每添加一个，上方自动多出一排）</div>";
   }
   for (const r of egressRegions) {
     const status = r.alive ? "🟢 运行中" : "🟡 已配置，未启动";
     html += egressRow(r.slot_id + "（端口 " + r.proxy_port + "）", "状态：" + status, false, r.slot_id);
   }
+  // 默认出口 7928：始终在最下面的空白区，仅作说明性提示（不可操作）
+  html += "<div style='margin-top:18px;padding-top:14px;border-top:1px dashed var(--border,#e5e7eb);'>" +
+    "<div style='font-size:12px;color:var(--text-tertiary,#9ca3af);margin-bottom:6px;letter-spacing:0.5px;'>常驻（不可删除）</div>" +
+    "<div style='display:flex;align-items:center;justify-content:space-between;gap:12px;padding:10px 14px;border:1px dashed var(--border,#e5e7eb);border-radius:8px;background:transparent;'>" +
+    "<div><div style='font-weight:500;font-size:14px;color:var(--text-secondary);'>默认出口</div>" +
+    "<div style='font-size:12px;color:var(--text-tertiary);margin-top:2px;'>端口 7928 ｜ 🟢 常驻 ｜ 始终存在</div></div>" +
+    "<div><span style='color:var(--text-tertiary,#9ca3af);font-size:12px;'>不可删除</span></div>" +
+    "</div></div>";
   list.innerHTML = html;
 }
 function egressRow(title, meta, isDefault, delSlotId) {
@@ -4896,8 +4902,7 @@ function egressRow(title, meta, isDefault, delSlotId) {
     "<div>" + action + "</div></div>";
 }
 async function addEgress() {
-  const resp = await fetchWithCsrf("./api/egress_regions", { method: "POST", body: JSON.stringify({}) });
-  const data = await resp.json();
+  const data = await fetchWithCsrf("./api/egress_regions", { method: "POST", body: JSON.stringify({}) });
   if (!data.ok) { alert("添加失败：" + (data.error || "")); return; }
   egressRegions = data.regions || [];
   renderEgress();
@@ -4905,8 +4910,7 @@ async function addEgress() {
 }
 async function delEgress(slotId) {
   if (!confirm("确定删除该出站代理？将停止其隧道并释放资源")) return;
-  const resp = await fetchWithCsrf("./api/egress_regions/delete", { method: "POST", body: JSON.stringify({ slot_id: slotId }) });
-  const data = await resp.json();
+  const data = await fetchWithCsrf("./api/egress_regions/delete", { method: "POST", body: JSON.stringify({ slot_id: slotId }) });
   if (!data.ok) { alert("删除失败：" + (data.error || "")); return; }
   egressRegions = data.regions || [];
   renderEgress();
@@ -4917,8 +4921,7 @@ async function loadEgressStatus() {
   const box = $("egress_status_blocks");
   if (!box) return;
   try {
-    const resp = await fetchWithCsrf("./api/egress_status_all");
-    const data = await resp.json();
+    const data = await fetchWithCsrf("./api/egress_status_all");
     const list = data.egress || [];
     if (!list.length) { box.innerHTML = ""; return; }
     box.innerHTML = "<div style='width:100%;font-size:15px;font-weight:600;color:var(--text-primary);margin-bottom:4px;'>出站代理状态</div>" + list.map(function(e) {
@@ -5273,8 +5276,7 @@ async function openNetworkModal() {
 
   // 1) 加载出口列表（默认 7928 + 各子出口）
   try {
-    const resp = await fetchWithCsrf("./api/egress_status_all");
-    const data = await resp.json();
+    const data = await fetchWithCsrf("./api/egress_status_all");
     netEgressList = (data.egress || []);
   } catch (e) { netEgressList = []; }
   const sel = $("net_egress");
