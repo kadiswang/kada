@@ -215,13 +215,30 @@ class SlotOrchestrator:
         # 关键修复：子出口的 TUN 设备必须避开父进程（默认出口）占用的 tun0。
         # slots.py normalize() 从 idx=0 开始分配 tun0/tun1/...，但父进程已用 tun0，
         # 所以子出口需要 +1 偏移：第一个子出口用 tun1，第二个用 tun2，以此类推。
+        tuned_slots = []
         for ci, cfg in enumerate(desired):
             if cfg.tun_dev and cfg.tun_dev.startswith("tun"):
                 try:
                     num = int(cfg.tun_dev[len("tun"):])
+                    old_tun = cfg.tun_dev
                     cfg.tun_dev = f"tun{num + 1}"
+                    tuned_slots.append(f"{cfg.slot_id}: {old_tun}→{cfg.tun_dev}")
                 except (ValueError, IndexError):
                     pass  # 非标准命名（如用户自定义），不自动调整
+        if tuned_slots:
+            print(f"[sync] TUN 设备偏移（避开父进程 tun0）：{', '.join(tuned_slots)}", flush=True)
+
+        # 将修正后的 tun_dev 写回持久化配置，确保服务重启后不丢失偏移
+        if tuned_slots and ui_cfg.get("slots"):
+            persist_needed = False
+            for s in ui_cfg.get("slots", []):
+                for cfg in desired:
+                    if str(s.get("slot_id")) == cfg.slot_id and s.get("tun_dev") != cfg.tun_dev:
+                        s["tun_dev"] = cfg.tun_dev
+                        persist_needed = True
+            if persist_needed:
+                self._persist(ui_cfg)
+                print(f"[sync] 已将修正后的 TUN 设备写回持久化配置", flush=True)
 
         # 停止已移除/停用的地区
         for slot_id, rp in list(self.regions.items()):

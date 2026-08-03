@@ -1828,6 +1828,13 @@ def connect_node(node_id: str) -> str:
         slot_tun_dev = str(ui_cfg.get("tun_dev") or "tun0")
         slot_route_table = int(ui_cfg.get("route_table") or 100)
         slot_fwmark = int(ui_cfg.get("fwmark") or 0)
+        # ── 子进程安全防线：禁止使用 tun0（已被父进程/默认出口占用）──
+        if os.environ.get("VPNGATE_SLOT_CHILD") == "1" and slot_tun_dev == "tun0":
+            raise RuntimeError(
+                "TUN 设备冲突：子进程不能使用 tun0（已被默认出口占用）。"
+                "请检查编排器是否正确分配了 TUN 设备（sync() 偏移逻辑），"
+                "或重启服务让编排器重新分配资源。"
+            )
         ui_cfg["connection_enabled"] = True
         if ui_cfg.get("routing_mode") == "fixed_ip":
             ui_cfg["fixed_node_id"] = node_id
@@ -7582,6 +7589,7 @@ class Handler(BaseHTTPRequestHandler):
                     "proxy_port": port,
                     "fixed_node_id": node_id,
                     "enabled": True,
+                    # 占位：tun_dev/route_table/fwmark 在 sync() 中由 normalize()+偏移逻辑填充后写回
                 }
                 slots.append(slot_def)
                 ui_cfg["slots"] = slots
