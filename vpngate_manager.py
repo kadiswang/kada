@@ -2242,26 +2242,20 @@ def maintain_shared_egress() -> None:
 
     不拉取官方 API、不重复测速（节点可用性由父进程统一测速后共享），
     从而满足"所有出口共用一个节点池、只拉取一次"的要求。
+
+    关键约束：此函数**不得**抢占 in-memory is_connecting。is_connecting 由
+    connect_node 完整管理（入口置 True、finally 置 False + set_state(False)）。
+    一旦 maintain_shared_egress 在调 connect_node 之前就把 is_connecting 设为 True，
+    子进程的 /api/connect（被父端转发过来处理用户切换）会在 connect_node 入口
+    撞 RuntimeError("当前已有连接或节点检测任务正在运行")——这就是用户截图里
+    "非默认出口点了切换却一直连不上"的根因。
     """
-    global is_connecting
     shared = os.environ.get("VPNGATE_SHARED_NODES")
     if not shared or not Path(shared).exists():
         return
     if not maintenance_lock.acquire(blocking=False):
         return
     try:
-        # 自愈：仅当内存中确实有正在跑的连接任务时才 short-circuit。
-        # 如果 is_connecting 被某个被 kill 掉的连接任务遗留为 True（但实际
-        # 进程早已结束或 tun 网卡不在），主动重置状态避免"永远卡在连接中"。
-        with lock:
-            if is_connecting and active_openvpn_running():
-                return
-            if is_connecting:
-                # 历史脏状态：进程已不在跑，但 is_connecting 仍卡在 True。
-                # 重置后本次周期继续工作。
-                is_connecting = False
-                set_state(is_connecting=False, last_check_message="清理历史卡死的连接状态后继续维护")
-            is_connecting = True
         ui_cfg = load_ui_config()
         country = ui_cfg.get("force_country") or ""
         fixed = ui_cfg.get("fixed_node_id") or ""
@@ -2270,7 +2264,7 @@ def maintain_shared_egress() -> None:
 
         nodes = read_json(Path(shared), [])
         if not nodes:
-            set_state(is_connecting=False, last_check_message="共享节点池暂无节点，等待父进程拉取...")
+            set_state(last_check_message="共享节点池暂无节点，等待父进程拉取...")
             return
 
         # 将共享池写入本进程本地节点文件，使 connect_node 能按 id 找到节点配置（含 config_text）
@@ -2281,21 +2275,20 @@ def maintain_shared_egress() -> None:
 
         target = select_best_node(nodes, country=country, fixed_id=fixed, ip_type=ip_type, min_health=min_health)
         if target is None:
-            set_state(is_connecting=False, last_check_message="共享节点池中没有符合过滤条件的节点")
+            set_state(last_check_message="共享节点池中没有符合过滤条件的节点")
             return
 
         if active_openvpn_node_id == str(target.get("id")) and active_openvpn_running():
-            is_connecting = False
-            return
+            return  # 已连目标节点，do nothing
 
         try:
             connect_node(str(target.get("id")))
-            set_state(is_connecting=False, last_check_message=f"已连接共享池节点 {target.get('id')}")
+            set_state(last_check_message=f"已连接共享池节点 {target.get('id')}")
         except Exception as exc:
             err_msg = f"连接共享池节点 {target.get('id')} 失败: {exc}"
             print(f"[共享出口] {err_msg}", flush=True)
             log_to_json("ERROR", "Egress", err_msg)
-            set_state(is_connecting=False, last_check_message=err_msg)
+            set_state(last_check_message=err_msg)
     finally:
         try:
             maintenance_lock.release()
@@ -5058,7 +5051,6 @@ async function loadEgress() {
       if (defaultEgress) selectedEgressSlotId = "__default__";
     }
     renderEgressCards();
-    renderEgressAdminTable();
     renderActiveNodeCardForEgress(selectedEgressSlotId || "__default__");
   } catch (e) { console.error(e); }
 }
@@ -5102,12 +5094,18 @@ function renderEgressCards() {
           : "<span class='badge available'><span class='badge-pulse'></span>运行中</span>"));
     const actions = isDown
       ? "<span style='color:var(--text-muted);font-size:13px;'>未启动</span>"
-      // 卡片上只保留"断开"按钮；删除入口统一在出站管理页(`page_egress`)
-      // 列表的每行右侧，避免卡片上"断开/删除"功能重复造成误操作。
+      // 卡片右侧：始终保留"断开"（停止当前隧道）；非默认出口额外提供"删除"
+      // （移除该实例、释放端口与子进程）。两个按钮职责清晰、互不冲突。
       : "<button class='btn-danger' style='height:36px;padding:0 14px;border-radius:8px;display:inline-flex;align-items:center;gap:6px;' onclick=\"event.stopPropagation();disconnectEgress('" + escAttr(e.slot_id) + "')\">" +
         "<svg viewBox='0 0 24 24' fill='none' stroke='currentColor' stroke-width='2' style='width:14px;height:14px;'><path d='M10 14l2-2m0 0l2-2m-2 2l-2-2m2 2l2 2m7-2a9 9 0 11-18 0 9 9 0 0118 0z'/></svg>" +
         "断开" +
-        "</button>";
+        "</button>" +
+        (!isDefault
+          ? "<button class='btn-ghost' style='height:36px;padding:0 12px;border-radius:8px;margin-left:8px;display:inline-flex;align-items:center;gap:6px;' onclick=\"event.stopPropagation();delEgress('" + escAttr(e.slot_id) + "')\">" +
+            "<svg viewBox='0 0 24 24' fill='none' stroke='currentColor' stroke-width='2' style='width:14px;height:14px;'><path d='M3 6h18M8 6V4a2 2 0 012-2h4a2 2 0 012 2v2m3 0v14a2 2 0 01-2 2H7a2 2 0 01-2-2V6h14z'/></svg>" +
+            "删除" +
+            "</button>"
+          : "");
     return "<div class='active-card' style='" + selectedStyle + "' onclick=\"selectEgress('" + escAttr(slotKey) + "')\">" +
       "<div class='active-card-info'>" +
         "<div class='stat-icon-wrapper' style='background: " + iconBg + "; border-color: " + iconBorder + "; width: 48px; height: 48px; border-radius: 12px;'>" +
@@ -5253,16 +5251,64 @@ function egressActiveNodeIdForSlot(slotKey) {
   }
   return null;
 }
-async function addEgress() {
-  const data = await fetchWithCsrf("./api/egress_regions", { method: "POST", body: JSON.stringify({}) });
-  if (!data.ok) { alert("添加失败：" + (data.error || "")); return; }
-  egressRegions = data.regions || [];
-  renderEgressCards();
+// 添加出站管理弹窗：让用户能写实例名/端口（用户反馈"弹窗要能写字"）。
+// name 留空由后端自动生成 egress_N；port 留空由后端从 7929 起自动顺延。
+function openAddEgressModal() {
+  const modal = $("add_egress_modal");
+  const nameInput = $("add_egress_name");
+  const portInput = $("add_egress_port");
+  const errBox = $("add_egress_error");
+  if (!modal) return;
+  if (nameInput) { nameInput.value = ""; nameInput.focus(); }
+  if (portInput) portInput.value = "";
+  if (errBox) { errBox.style.display = "none"; errBox.textContent = ""; }
+  modal.style.display = "flex";
+}
+function closeAddEgressModal() {
+  const modal = $("add_egress_modal");
+  if (modal) modal.style.display = "none";
+}
+async function submitAddEgress() {
+  const nameInput = $("add_egress_name");
+  const portInput = $("add_egress_port");
+  const errBox = $("add_egress_error");
+  const submitBtn = $("add_egress_submit_btn");
+  if (!nameInput || !portInput) return;
+  const name = (nameInput.value || "").trim();
+  let port = 0;
+  const portRaw = (portInput.value || "").trim();
+  if (portRaw) {
+    const parsed = parseInt(portRaw, 10);
+    if (!Number.isFinite(parsed) || parsed < 1024 || parsed > 65535) {
+      if (errBox) { errBox.style.display = "block"; errBox.textContent = "端口必须在 1024-65535 之间"; }
+      return;
+    }
+    port = parsed;
+  }
+  if (errBox) { errBox.style.display = "none"; errBox.textContent = ""; }
+  if (submitBtn) { submitBtn.disabled = true; submitBtn.textContent = "添加中…"; }
   try {
-    const s = await fetchWithCsrf("./api/egress_status_all");
-    egressStatusList = s.egress || [];
+    const data = await fetchWithCsrf("./api/egress_regions", {
+      method: "POST",
+      body: JSON.stringify({ name: name, port: port || 0 }),
+    });
+    if (!data.ok) {
+      if (errBox) { errBox.style.display = "block"; errBox.textContent = "添加失败：" + (data.error || "未知错误"); }
+      return;
+    }
+    closeAddEgressModal();
+    egressRegions = data.regions || [];
     renderEgressCards();
-  } catch (e) {}
+    try {
+      const s = await fetchWithCsrf("./api/egress_status_all");
+      egressStatusList = s.egress || [];
+      renderEgressCards();
+    } catch (e) {}
+  } catch (e) {
+    if (errBox) { errBox.style.display = "block"; errBox.textContent = "网络错误：" + (e && e.message ? e.message : e); }
+  } finally {
+    if (submitBtn) { submitBtn.disabled = false; submitBtn.textContent = "添加"; }
+  }
 }
 async function delEgress(slotId) {
   if (!confirm("确定删除该出站管理？将停止其隧道并释放资源")) return;
@@ -5272,61 +5318,7 @@ async function delEgress(slotId) {
   egressStatusList = egressStatusList.filter(function(x) { return x.slot_id !== slotId; });
   if (selectedEgressSlotId === slotId) selectedEgressSlotId = null;
   renderEgressCards();
-}
-// 出站管理实例列表（页面内的统一删除入口）。仅在 page_egress 内可见，
-// 由 egress_status_blocks 之下的容器自动跟随 page_egress 显隐。
-function renderEgressAdminTable() {
-  const tbody = $("egress_admin_rows");
-  const summary = $("egress_admin_summary");
-  if (!tbody) return;
-  const regions = (egressRegions || []).filter(function(r) { return r && r.slot_id && r.slot_id !== "__default__"; });
-  if (summary) summary.textContent = "共 " + regions.length + " 个实例";
-  if (regions.length === 0) {
-    tbody.innerHTML = '<tr><td colspan="5" style="text-align:center;color:var(--text-secondary);padding:24px 0;">尚未添加任何出站管理实例。点击上方“添加出站管理”开始。</td></tr>';
-    return;
-  }
-  function statusFor(slotId) {
-    for (var i = 0; i < (egressStatusList || []).length; i++) {
-      if (egressStatusList[i].slot_id === slotId) return egressStatusList[i];
-    }
-    return null;
-  }
-  function nodeOf(slotId) {
-    for (var i = 0; i < (nodes || []).length; i++) {
-      if (nodes[i].id === slotId || nodes[i].active) return nodes[i];
-    }
-    return null;
-  }
-  tbody.innerHTML = regions.map(function(r) {
-    const st = statusFor(r.slot_id) || {};
-    const port = r.ui_port || "-";
-    const isDown = (!st || st.is_down);
-    const isConnecting = !!st.is_connecting;
-    const activeNodeId = st.active_node_id || "";
-    let statusHtml;
-    if (isDown) {
-      statusHtml = "<span style='color:var(--text-secondary);font-size:12px;'>未启动</span>";
-    } else if (activeNodeId) {
-      statusHtml = "<span style='color:#10b981;font-size:12px;font-weight:600;'>已连接</span>";
-    } else if (isConnecting) {
-      statusHtml = "<span style='color:#f59e0b;font-size:12px;font-weight:600;'>连接中</span>";
-    } else {
-      statusHtml = "<span style='color:#64748b;font-size:12px;'>未连接</span>";
-    }
-    const nodeInfo = activeNodeId || (isDown ? "-" : "尚未连接节点");
-    return "<tr>" +
-      "<td style='font-family: ui-monospace, \"SF Mono\", Menlo, monospace; font-size: 13px;'>" + esc(r.slot_id) + "</td>" +
-      "<td style='font-family: ui-monospace, \"SF Mono\", Menlo, monospace; font-size: 13px;'>" + esc(String(port)) + "</td>" +
-      "<td>" + statusHtml + "</td>" +
-      "<td style='font-size: 12px; color: var(--text-secondary);'>" + esc(nodeInfo) + "</td>" +
-      "<td>" +
-        "<button class='btn-ghost' style='height:28px;padding:0 10px;border-radius:6px;font-size:12px;display:inline-flex;align-items:center;gap:4px;' onclick=\"delEgress('" + esc(r.slot_id) + "')\">" +
-        "<svg viewBox='0 0 24 24' fill='none' stroke='currentColor' stroke-width='2' style='width:12px;height:12px;'><path d='M3 6h18M8 6V4a2 2 0 012-2h4a2 2 0 012 2v2m3 0v14a2 2 0 01-2 2H7a2 2 0 01-2-2V6h14z'/></svg>" +
-        "删除" +
-        "</button>" +
-      "</td>" +
-    "</tr>";
-  }).join("");
+  renderActiveNodeCardForEgress(selectedEgressSlotId || "__default__");
 }
 async function disconnectEgress(slotId) {
   if (!confirm("确定断开该出站管理？该出口的隧道将停止")) return;
@@ -6194,6 +6186,22 @@ URL.revokeObjectURL(url);
 </script>
 
   <div id="page_egress" class="page-content" style="display:none;">
+    <!-- 添加出站管理弹窗：让用户给新实例起名（备注/用途）+ 选端口（留空自动顺延） -->
+    <div id="add_egress_modal" style="display:none; position:fixed; inset:0; background:rgba(15,23,42,0.45); z-index:1000; align-items:center; justify-content:center;">
+      <div style="background:var(--bg-card,#fff); border:1px solid var(--border-color,#e2e8f0); border-radius:12px; padding:24px; width:min(420px, 90vw); box-shadow:0 20px 50px rgba(15,23,42,0.25);">
+        <h3 style="margin:0 0 4px; font-size:18px; font-weight:600; color:var(--text-primary,#0f172a);">添加出站管理实例</h3>
+        <p style="margin:0 0 16px; font-size:12px; color:var(--text-secondary,#64748b); line-height:1.6;">为新实例起个名字（留空自动生成）。端口默认自动顺延（7929 起），如有冲突可手动指定空闲端口。</p>
+        <label style="display:block; font-size:12px; color:var(--text-secondary,#64748b); margin-bottom:6px;">实例名称 <span style="color:var(--text-muted,#94a3b8);">（可选）</span></label>
+        <input id="add_egress_name" type="text" maxlength="40" placeholder="例如：东京-住宅IP" style="width:100%; box-sizing:border-box; height:36px; padding:0 12px; border-radius:8px; border:1px solid var(--border-color,#cbd5e1); background:var(--bg-surface,#f8fafc); color:var(--text-primary,#0f172a); font-size:13px; outline:none;" />
+        <label style="display:block; font-size:12px; color:var(--text-secondary,#64748b); margin:14px 0 6px;">本地监听端口 <span style="color:var(--text-muted,#94a3b8);">（留空自动顺延）</span></label>
+        <input id="add_egress_port" type="number" min="1024" max="65535" placeholder="7929 / 7930 / ..." style="width:100%; box-sizing:border-box; height:36px; padding:0 12px; border-radius:8px; border:1px solid var(--border-color,#cbd5e1); background:var(--bg-surface,#f8fafc); color:var(--text-primary,#0f172a); font-size:13px; outline:none;" />
+        <div id="add_egress_error" style="display:none; margin-top:10px; padding:8px 10px; font-size:12px; color:#dc2626; background:rgba(220,38,38,0.08); border:1px solid rgba(220,38,38,0.20); border-radius:6px;"></div>
+        <div style="display:flex; justify-content:flex-end; gap:8px; margin-top:18px;">
+          <button class="btn-ghost" onclick="closeAddEgressModal()" style="height:36px; padding:0 14px; border-radius:8px;">取消</button>
+          <button class="btn-primary" id="add_egress_submit_btn" onclick="submitAddEgress()" style="height:36px; padding:0 16px; border-radius:8px; font-weight:600;">添加</button>
+        </div>
+      </div>
+    </div>
     <section class="toolbar" style="padding:20px; flex-direction:column; align-items:stretch; gap:14px;">
       <div style="display:flex;align-items:center;justify-content:space-between;gap:12px;flex-wrap:wrap;">
         <div>
@@ -6201,7 +6209,7 @@ URL.revokeObjectURL(url);
           <p style="color:var(--text-muted);margin:0;font-size:13px;line-height:1.6;">这里只决定要几个出站管理实例，每个实例是一套独立的 <strong style="color:var(--text);">HTTP/SOCKS5 代理端口</strong>。端口自动顺延（默认 7928，新增从 7929 起）。所有出站管理<strong style="color:var(--text);">共用同一份节点池</strong>（只拉取一次，不重复抓）。</p>
         </div>
         <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center;">
-          <button class="btn-primary" onclick="addEgress()" style="height:36px;padding:0 14px;border-radius:8px;font-weight:600;display:inline-flex;align-items:center;gap:6px;">
+          <button class="btn-primary" onclick="openAddEgressModal()" style="height:36px;padding:0 14px;border-radius:8px;font-weight:600;display:inline-flex;align-items:center;gap:6px;">
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" style="width:14px;height:14px;"><path d="M12 5v14M5 12h14"/></svg>
             添加出站管理
           </button>
@@ -6211,29 +6219,7 @@ URL.revokeObjectURL(url);
           </button>
         </div>
       </div>
-      <div id="page_egress_hint" style="color: var(--text-muted); font-size: 12px; text-align: right;">点击下方任一卡片查看其可用节点列表；删除出站管理实例请在本页下方的实例列表操作。</div>
-    </section>
-
-    <!-- 出站管理实例列表（删除/批量操作的统一入口，避免卡片上删除按钮造成误操作） -->
-    <section class="table-wrapper" style="margin: 8px 0 0 0;">
-      <div style="display:flex; align-items:center; justify-content:space-between; padding: 0 4px 8px;">
-        <span style="font-size: 15px; font-weight: 600; color: var(--text-primary);">已配置的出站管理实例</span>
-        <span id="egress_admin_summary" style="font-size: 12px; color: var(--text-secondary);"></span>
-      </div>
-      <div class="table-container">
-        <table>
-          <thead>
-            <tr>
-              <th style="width: 140px;">实例 ID</th>
-              <th style="width: 90px;">端口</th>
-              <th style="width: 110px;">状态</th>
-              <th>当前节点</th>
-              <th style="width: 110px;">操作</th>
-            </tr>
-          </thead>
-          <tbody id="egress_admin_rows"></tbody>
-        </table>
-      </div>
+      <div id="page_egress_hint" style="color: var(--text-muted); font-size: 12px; text-align: right;">点击下方任一卡片查看其可用节点列表；点击卡片右侧"删除"按钮可移除该出站管理实例。</div>
     </section>
   </div>
 
@@ -7165,6 +7151,7 @@ class Handler(BaseHTTPRequestHandler):
                 node_id = str(payload.get("node_id") or "").strip()
                 slot_def = {
                     "slot_id": slot_id,
+                    "name": name,  # 实例名（可选；用户可在弹窗里给新实例起个备注/用途）
                     "region": country,
                     "proxy_port": port,
                     "fixed_node_id": node_id,
@@ -7590,6 +7577,7 @@ def _build_egress_regions(ui_cfg: dict[str, Any]) -> list[dict[str, Any]]:
             continue
         regions.append({
             "slot_id": slot_id,
+            "name": str(s.get("name") or ""),  # 实例名（用户可给新实例起的备注/用途）
             "proxy_port": port,
             "region": str(s.get("region") or ""),
             "alive": _quick_proxy_listen(port),
