@@ -331,16 +331,17 @@ class TestEgressPageStyleAndModal(unittest.TestCase):
                       "loadEgress 必须请求 /api/egress_status_all 以拿到 mode/country 等真实配置")
         self.assertIn("./api/egress_regions", fn_body,
                       "loadEgress 必须请求 /api/egress_regions 以拿到添加/删除入口")
-        # 必须过滤掉默认出口
-        self.assertIn("is_default", fn_body,
-                      "loadEgress 必须过滤掉默认出口（is_default）")
+        # 现在默认出口也要显示（主页=默认+egress 共用卡片），所以不再过滤 is_default
+        # 但要确认默认出口的 is_default=true 也被保留到状态列表里
+        self.assertIn("statusResp.egress", fn_body,
+                      "loadEgress 必须把默认出口也保留在状态列表（statusResp.egress 整体赋值）")
 
     def test_render_egress_uses_active_card_style(self):
-        """renderEgress 必须用与主页完全同款 .active-card 样式，包含 mode/country/ip/node 字段。"""
+        """renderEgressCards 必须用与主页完全同款 .active-card 样式，包含 mode/country/ip/node 字段。"""
         mgr_path = Path(__file__).resolve().parent.parent / "vpngate_manager.py"
         body = mgr_path.read_text(encoding="utf-8")
-        fn_body = self._extract_function_body(body, "function renderEgress")
-        self.assertTrue(fn_body, "renderEgress 函数必须存在")
+        fn_body = self._extract_function_body(body, "function renderEgressCards")
+        self.assertTrue(fn_body, "renderEgressCards 函数必须存在")
         # 必须用 .active-card
         self.assertIn("active-card", fn_body)
         # 必须有 48px 图标块
@@ -348,10 +349,15 @@ class TestEgressPageStyleAndModal(unittest.TestCase):
         # 必须显示 模式/国家/类型/节点 四个真实配置字段
         for field in ["模式:", "国家:", "类型:", "节点:"]:
             self.assertIn(field, fn_body,
-                          f"renderEgress 必须显示 {field} 字段（与主页同款信息密度）")
-        # 右侧必须有删除按钮
+                          f"renderEgressCards 必须显示 {field} 字段（与主页同款信息密度）")
+        # 右侧必须有断开/删除按钮
         self.assertIn("btn-danger", fn_body)
         self.assertIn("delEgress", fn_body)
+        # 必须支持选中态
+        self.assertIn("selectedEgressSlotId", fn_body,
+                      "renderEgressCards 必须支持选中态（selectedEgressSlotId）")
+        self.assertIn("selectEgress", fn_body,
+                      "renderEgressCards 必须调用 selectEgress 切换选中")
 
     def test_overview_label_renamed_to_home(self):
         """侧边栏"概览"已改为"主页"，作为默认着陆页。"""
@@ -365,6 +371,145 @@ class TestEgressPageStyleAndModal(unittest.TestCase):
         # 页面默认初始化：localStorage 默认值仍为 overview（page_overview），即主页
         self.assertIn('localStorage.getItem("vpngate_page") || "overview"',
                       body, "默认着陆页必须保持 overview（即视觉上的'主页'）")
+
+
+class TestEgressUnifiedUi(unittest.TestCase):
+    """本次需求：
+    1. 排查非默认出口"未连接"原因 + 修 /api/connect 支持 slot_id（让用户能切到指定出口的节点）
+    2. 未选卡片时不显示节点列表；选中出口 X 只显示该出口配置对应的节点
+    3. 主页与出站代理页 UI 统一
+    """
+
+    def test_get_instance_egress_status_includes_diagnostic_fields(self):
+        """get_instance_egress_status 必须包含 is_connecting/last_check_message/last_check_status
+        等诊断字段，否则前端未连接卡片无法告诉用户为何没连。"""
+        mgr_path = Path(__file__).resolve().parent.parent / "vpngate_manager.py"
+        body = mgr_path.read_text(encoding="utf-8")
+        # 用 _extract_function_body 工具找函数
+        from tests.test_egress_ui import TestEgressPageStyleAndModal as _Cls
+        fn = _Cls._extract_function_body(body, "def get_instance_egress_status")
+        self.assertTrue(fn, "get_instance_egress_status 函数必须存在")
+        for field in ["is_connecting", "last_check_message", "last_check_status", "connection_enabled", "active_node_id"]:
+            self.assertIn(f'"{field}"', fn, f"get_instance_egress_status 必须暴露 {field} 字段")
+
+    def test_api_connect_forwards_to_child_when_slot_id_given(self):
+        """父端 /api/connect 在 slot_id != __default__ 时必须把请求转发到子进程，
+        否则用户从 egress 列表点"切换"只切默认出口，修复这个核心 bug。"""
+        mgr_path = Path(__file__).resolve().parent.parent / "vpngate_manager.py"
+        body = mgr_path.read_text(encoding="utf-8")
+        from tests.test_egress_ui import TestEgressPageStyleAndModal as _Cls
+        # 找 /api/connect 的 handler
+        idx = body.find('elif effective_path == "/api/connect":')
+        self.assertGreater(idx, 0, "必须有 /api/connect handler")
+        # 取到下一个 elif 之前
+        end = body.find("\n        elif ", idx + 30)
+        if end < 0:
+            end = idx + 3000
+        fn = body[idx:end]
+        # 必须读 slot_id
+        self.assertIn("slot_id", fn, "/api/connect handler 必须读 slot_id")
+        # 必须有 egress_forward 调用
+        self.assertIn("egress_forward", fn, "/api/connect 必须用 egress_forward 转发到子进程")
+        # 子进程路径必须是 /api/connect
+        self.assertIn('"/api/connect"', fn, "egress_forward 必须指向子进程 /api/connect")
+
+    def test_egress_routing_config_endpoint_default(self):
+        """/api/egress_routing_config 必须能返回默认出口的配置（用于节点列表过滤）。"""
+        mgr_path = Path(__file__).resolve().parent.parent / "vpngate_manager.py"
+        body = mgr_path.read_text(encoding="utf-8")
+        # 1) handler 端点
+        self.assertIn('"/api/egress_routing_config"', body, "必须有 /api/egress_routing_config handler")
+        # 2) helper 函数
+        self.assertIn("def _get_egress_routing_config", body, "必须有 _get_egress_routing_config helper")
+        # 3) 找函数体，检查 default 分支
+        from tests.test_egress_ui import TestEgressPageStyleAndModal as _Cls
+        fn = _Cls._extract_function_body(body, "def _get_egress_routing_config")
+        self.assertTrue(fn, "_get_egress_routing_config 函数体必须可定位")
+        self.assertIn("__default__", fn, "default 出口走 ui_cfg 顶层字段")
+        self.assertIn("routing_mode", fn)
+        self.assertIn("force_country", fn)
+        self.assertIn("routing_ip_type", fn)
+
+    def test_selected_egress_slot_id_state_and_toggle(self):
+        """selectedEgressSlotId 全局 + selectEgress 切换 + renderEgressCards 渲染选中态。"""
+        mgr_path = Path(__file__).resolve().parent.parent / "vpngate_manager.py"
+        body = mgr_path.read_text(encoding="utf-8")
+        # 全局
+        self.assertIn("let selectedEgressSlotId", body, "必须有 selectedEgressSlotId 全局状态")
+        # 函数
+        self.assertIn("function selectEgress", body, "必须有 selectEgress 函数")
+        # 渲染选中态
+        self.assertIn("isSelected", body, "renderEgressCards 必须根据 selectedEgressSlotId 计算 isSelected")
+        self.assertIn("已选中", body, "选中态必须有'已选中'徽标显示")
+
+    def test_render_egress_node_list_uses_routing_config(self):
+        """renderEgressNodeList 必须根据 selectedEgressSlotId 调 /api/egress_routing_config 拿过滤配置。"""
+        mgr_path = Path(__file__).resolve().parent.parent / "vpngate_manager.py"
+        body = mgr_path.read_text(encoding="utf-8")
+        from tests.test_egress_ui import TestEgressPageStyleAndModal as _Cls
+        fn = _Cls._extract_function_body(body, "async function renderEgressNodeList")
+        self.assertTrue(fn, "renderEgressNodeList 函数必须存在")
+        self.assertIn("egress_routing_config", fn, "renderEgressNodeList 必须请求 /api/egress_routing_config")
+        # 必须在 selectedEgressSlotId 为空时整段隐藏
+        self.assertIn("overview_node_section", fn, "renderEgressNodeList 必须切换 overview_node_section 的 display")
+        self.assertIn("selectedEgressSlotId", fn, "renderEgressNodeList 必须依赖 selectedEgressSlotId")
+        # 必须支持 cfg.not_found 走全部节点
+        self.assertIn("not_found", fn, "renderEgressNodeList 必须支持 not_found 出口（未配置时显示所有节点）")
+        # connectNode 必须传 slotId
+        self.assertIn("connectNode(", fn, "renderEgressNodeList 里的切换按钮必须调用 connectNode")
+        self.assertIn("slotKey", fn, "connectNode 必须接收 slotKey（出口 ID）")
+
+    def test_connect_node_accepts_slot_id(self):
+        """connectNode 必须支持 slotId 参数（用于指定切到哪个出口的节点）。"""
+        mgr_path = Path(__file__).resolve().parent.parent / "vpngate_manager.py"
+        body = mgr_path.read_text(encoding="utf-8")
+        from tests.test_egress_ui import TestEgressPageStyleAndModal as _Cls
+        fn = _Cls._extract_function_body(body, "async function connectNode")
+        self.assertTrue(fn, "connectNode 函数必须存在")
+        # 签名要有 slotId
+        self.assertIn("slotId", fn, "connectNode 函数必须接受 slotId 参数")
+        # 必须把 slot_id 传给 /api/connect
+        self.assertIn("slot_id", fn, "connectNode 必须把 slot_id 发到 /api/connect")
+        # 默认走 __default__
+        self.assertIn("__default__", fn, "connectNode 默认走 __default__ 出口")
+
+    def test_egress_status_blocks_hoisted_out_of_page_content(self):
+        """#egress_status_blocks 和 #overview_node_section 必须从 page-content 内移到外面，
+        这样主页和出站代理页才能共用同一组 DOM（消除两个页 UI 不一致的差异）。"""
+        mgr_path = Path(__file__).resolve().parent.parent / "vpngate_manager.py"
+        body = mgr_path.read_text(encoding="utf-8")
+        # 节点列表容器 ID
+        self.assertIn('id="overview_node_section"', body, "必须有 overview_node_section 容器")
+        # 必须由 switchPage 控制共享容器的 display
+        idx = body.find("function switchPage")
+        self.assertGreater(idx, 0)
+        end = body.find("\nfunction ", idx + 30)
+        if end < 0:
+            end = idx + 3000
+        fn = body[idx:end]
+        self.assertIn("egress_status_blocks", fn, "switchPage 必须控制 egress_status_blocks 显隐")
+        self.assertIn("overview_node_section", fn, "switchPage 必须控制 overview_node_section 显隐")
+        # 节点管理页不应显示共享容器
+        self.assertIn("sharedVisible", fn, "switchPage 必须按当前 page 决定 sharedVisible")
+
+    def test_page_egress_no_longer_uses_egress_list_id(self):
+        """page_egress 不应再用 #egress_list（已外提为 #egress_status_blocks）。"""
+        mgr_path = Path(__file__).resolve().parent.parent / "vpngate_manager.py"
+        body = mgr_path.read_text(encoding="utf-8")
+        self.assertNotIn('id="egress_list"', body, "page_egress 不应再有 id='egress_list' 容器")
+
+    def test_no_double_json_in_loadEgress(self):
+        """loadEgress 不能对 fetchWithCsrf 的结果再 .json()，否则会 TypeError 被吞导致渲染空。"""
+        mgr_path = Path(__file__).resolve().parent.parent / "vpngate_manager.py"
+        body = mgr_path.read_text(encoding="utf-8")
+        from tests.test_egress_ui import TestEgressPageStyleAndModal as _Cls
+        fn = _Cls._extract_function_body(body, "async function loadEgress")
+        # 去掉注释行
+        import re
+        code_lines = [ln for ln in fn.splitlines() if not ln.strip().startswith("//")]
+        code_only = "\n".join(code_lines)
+        self.assertNotIn(".json()", code_only,
+                         "loadEgress 内不能再出现 .json()，fetchWithCsrf 已返回解析后数据")
 
 
 if __name__ == "__main__":
