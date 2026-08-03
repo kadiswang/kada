@@ -828,6 +828,82 @@ class TestEgressStuckRecovery(unittest.TestCase):
         self.assertIsNotNone(m,
                              "collector_loop 必须在 try 之前初始化 res='子出口周期...' 防止 UnboundLocalError")
 
+    # ==================== 新增：出站模块卡片 + 刷新反馈 + 国家筛选修复 ====================
+
+    def test_egress_module_card_structure(self):
+        """page_egress 必须包含出站模块卡片（egress_module_card），含标题栏、计数标签、空状态提示。"""
+        mgr_path = Path(__file__).resolve().parent.parent / "vpngate_manager.py"
+        body = mgr_path.read_text(encoding="utf-8")
+        self.assertIn('id="egress_module_card"', body, "必须有 egress_module_card 模块容器")
+        self.assertIn('id="egress_status_blocks"', body, "egress_status_blocks 必须存在于模块内")
+        self.assertIn('id="egress_empty_hint"', body, "必须有空状态提示 egress_empty_hint")
+        self.assertIn('id="egress_card_count_label"', body, "必须有实例计数标签 egress_card_count_label")
+
+
+class TestEgressModuleCardAndFeedback(unittest.TestCase):
+    """新增：出站模块卡片结构、刷新按钮加载反馈、国家筛选规范化。"""
+
+    @staticmethod
+    def _extract_function_body(code: str, func_signature: str) -> str:
+        idx = code.find(func_signature)
+        if idx < 0:
+            return ""
+        start = code.index("{", idx) + 1
+        depth = 1
+        i = start
+        while i < len(code) and depth > 0:
+            if code[i] == "{":
+                depth += 1
+            elif code[i] == "}":
+                depth -= 1
+            i += 1
+        return code[start:i - 1]
+
+    def test_refresh_button_has_loading_feedback(self):
+        """刷新状态按钮必须调用 loadEgressWithFeedback（带加载动画/文字变化），而非直接 loadEgress。"""
+        mgr_path = Path(__file__).resolve().parent.parent / "vpngate_manager.py"
+        body = mgr_path.read_text(encoding="utf-8")
+        self.assertIn("loadEgressWithFeedback", body, "必须有 loadEgressWithFeedback 函数")
+        self.assertIn('id="btn_refresh_egress"', body, "刷新按钮必须有 id=btn_refresh_egress")
+        self.assertIn('id="refresh_egress_text"', body, "刷新按钮必须有文字元素 refresh_egress_text")
+        self.assertIn('id="refresh_egress_icon"', body, "刷新按钮必须有图标元素 refresh_egress_icon")
+        # 按钮的 onclick 应该是 loadEgressWithFeedback 而非 loadEgress
+        idx = body.find('id="btn_refresh_egress"')
+        self.assertGreater(idx, 0)
+        onclick_area = body[idx:idx + 200]
+        self.assertIn("loadEgressWithFeedback", onclick_area,
+                      "刷新按钮 onclick 应为 loadEgressWithFeedback（带加载反馈）")
+        # 函数体中应有 _egressRefreshing 防重入标志
+        fn = self._extract_function_body(body, "function loadEgressWithFeedback")
+        self.assertGreater(len(fn), 0)
+        self.assertIn("_egressRefreshing", fn, "loadEgressWithFeedback 必须有防重入标志 _egressRefreshing")
+        self.assertIn("spin", fn, "loadEgressWithFeedback 必须有旋转动画（spin）")
+        self.assertIn("刷新中", fn, "loadEgressWithFeedback 必须显示'刷新中'状态文本")
+
+    def test_country_filter_normalizes_both_sides(self):
+        """renderEgressNodeList 的国家筛选必须将 forceCountry 和 n.country 都通过 countryDict 规范化后再比对，
+        避免存了代码（KR）但节点是中文名（韩国）或反之导致筛选失效。"""
+        mgr_path = Path(__file__).resolve().parent.parent / "vpngate_manager.py"
+        body = mgr_path.read_text(encoding="utf-8")
+        fn = self._extract_function_body(body, "function renderEgressNodeList")
+        self.assertGreater(len(fn), 0)
+        # 必须有 _normCountry 辅助函数（或等价的规范化逻辑）
+        self.assertIn("_normCountry", fn, "renderEgressNodeList 必须定义 _normCountry 辅助函数做国家名规范化")
+        # 筛选条件必须用 _forceCountryNorm（规范化后的值）
+        self.assertIn("_forceCountryNorm", fn, "renderEgressNodeList 必须使用 _forceCountryNorm 做筛选比对")
+        # filter 回调里必须调用 _normCountry(n.country)
+        self.assertIn("_normCountry(n.country)", fn,
+                      "renderEgressNodeList 筛选回调必须对 n.country 做 _normCountry 规范化")
+
+    def test_renderEgressCards_updates_count_label_and_empty_hint(self):
+        """renderEgressCards 必须更新模块卡片的计数标签和空状态提示。"""
+        mgr_path = Path(__file__).resolve().parent.parent / "vpngate_manager.py"
+        body = mgr_path.read_text(encoding="utf-8")
+        fn = self._extract_function_body(body, "function renderEgressCards")
+        self.assertGreater(len(fn), 0)
+        self.assertIn("egress_empty_hint", fn, "renderEgressCards 必须处理 egress_empty_hint 显示/隐藏")
+        self.assertIn("egress_card_count_label", fn, "renderEgressCards 必须更新 egress_card_count_label")
+
 
 if __name__ == "__main__":
     unittest.main()

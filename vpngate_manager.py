@@ -5202,11 +5202,47 @@ function renderHomeEgressCards() {
 // ---- 出站管理卡片渲染（写 egress_status_blocks，含断开 + 删除 + 节点列表） ----
 function renderEgressCards() {
   const box = $("egress_status_blocks");
+  const emptyHint = $("egress_empty_hint");
+  const countLabel = $("egress_card_count_label");
   if (!box) return;
   const list = _sortEgressForDisplay(egressStatusList || []);
-  if (!list.length) { box.innerHTML = ""; renderEgressNodeList(); return; }
+  // 更新模块卡片标题栏的计数
+  if (countLabel) countLabel.textContent = list.length > 0 ? "共 " + list.length + " 个实例" : "";
+  // 空状态提示
+  if (!list.length) {
+    box.innerHTML = "";
+    if (emptyHint) emptyHint.style.display = "";
+    renderEgressNodeList();
+    return;
+  }
+  if (emptyHint) emptyHint.style.display = "none";
   box.innerHTML = list.map(function(e) { return _buildEgressCardHTML(e, "egress"); }).join("");
   renderEgressNodeList();
+}
+
+// ---- 刷新状态（带加载反馈） ----
+let _egressRefreshing = false;
+async function loadEgressWithFeedback() {
+  if (_egressRefreshing) return;
+  _egressRefreshing = true;
+  const btn = $("btn_refresh_egress");
+  const icon = $("refresh_egress_icon");
+  const text = $("refresh_egress_text");
+  if (btn) { btn.disabled = true; btn.style.opacity = "0.6"; }
+  if (icon) icon.style.animation = "spin 1s linear infinite";
+  if (text) text.textContent = "刷新中...";
+  try {
+    await loadEgress();
+    if (text) text.textContent = "已刷新";
+    setTimeout(function() { if (!_egressRefreshing && text) text.textContent = "刷新状态"; }, 1500);
+  } catch (e) {
+    if (text) text.textContent = "刷新失败";
+    setTimeout(function() { if (!_egressRefreshing && text) text.textContent = "刷新状态"; }, 2000);
+  } finally {
+    _egressRefreshing = false;
+    if (icon) icon.style.animation = "";
+    if (btn) { btn.disabled = false; btn.style.opacity = ""; }
+  }
 }
 
 // ---- 主页：选中卡片（只影响主页状态，不影响出站管理页） ----
@@ -5258,11 +5294,18 @@ async function renderEgressNodeList() {
   const fixedId = (cfg && cfg.fixed_node_id) || (slotIsDefault ? (state.fixed_node_id || "") : "");
 
   let filtered = (nodes || []).filter(function(n) { return n && n.id; });
+  // 统一国家字段：force_country 可能存的是代码（"KR"）也可能是中文名（"韩国"），节点 n.country 同理。
+  // 这里把两边都规范化成"中文名"后再比对，避免"选了韩国却匹配到 KR/JP"或反之。
+  const _normCountry = function(c) {
+    if (!c) return "";
+    return (countryDict[c] || c || "").toString().trim();
+  };
+  const _forceCountryNorm = _normCountry(forceCountry);
   if (cfg && cfg.not_found) {
     // 选中未配置出口：显示所有节点
-  } else if (routingMode === "fixed_region" && forceCountry) {
+  } else if (routingMode === "fixed_region" && _forceCountryNorm) {
     filtered = filtered.filter(function(n) {
-      return n.country === forceCountry || (countryDict[n.country] || n.country) === forceCountry;
+      return _normCountry(n.country) === _forceCountryNorm;
     });
   } else if (routingMode === "fixed_ip" && fixedId) {
     filtered = filtered.filter(function(n) { return n.id === fixedId; });
@@ -5289,7 +5332,7 @@ async function renderEgressNodeList() {
 
   const parts = [];
   parts.push(slotIsDefault ? "默认出口" : ("出口 " + slotKey));
-  if (routingMode === "fixed_region" && forceCountry) parts.push(forceCountry);
+  if (routingMode === "fixed_region" && _forceCountryNorm) parts.push(_forceCountryNorm);
   else if (routingMode === "fixed_ip") parts.push("固定 IP");
   else if (routingMode === "favorites") parts.push("收藏节点");
   else parts.push("自动配置");
@@ -6330,9 +6373,9 @@ URL.revokeObjectURL(url);
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" style="width:14px;height:14px;"><path d="M12 5v14M5 12h14"/></svg>
             添加出站管理
           </button>
-          <button class="btn-ghost" onclick="loadEgress()" style="height:36px;padding:0 14px;border-radius:8px;display:inline-flex;align-items:center;gap:6px;">
-            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="width:14px;height:14px;"><path d="M23 4v6h-6M1 20v-6h6M3.51 9a9 9 0 0114.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0020.49 15"/></svg>
-            刷新状态
+          <button class="btn-ghost" id="btn_refresh_egress" onclick="loadEgressWithFeedback()" style="height:36px;padding:0 14px;border-radius:8px;display:inline-flex;align-items:center;gap:6px;">
+            <svg id="refresh_egress_icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="width:14px;height:14px;"><path d="M23 4v6h-6M1 20v-6h6M3.51 9a9 9 0 0114.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0020.49 15"/></svg>
+            <span id="refresh_egress_text">刷新状态</span>
           </button>
         </div>
       </div>
@@ -6340,8 +6383,20 @@ URL.revokeObjectURL(url);
     </section>
     <!-- 出站管理专用：顶部活动节点卡（按出站管理页选中出口渲染，与主页独立） -->
     <section class="active-node-section" id="egress_active_node_card" style="margin: 0 20px 24px 20px;"></section>
-    <!-- 出站管理专用：出口卡片区（只在该页内显示，与主页完全独立） -->
-    <div id="egress_status_blocks" style="display:flex;flex-direction:column;gap:12px;margin: 0 20px 24px 20px;"></div>
+    <!-- 出站模块：出口实例卡片区（与下方节点列表模块视觉一致） -->
+    <div id="egress_module_card" style="margin: 0 20px 24px 20px; background: var(--surface); border: 1px solid var(--border); border-radius: 10px; box-shadow: var(--shadow-sm); overflow: hidden;">
+      <div style="display:flex;align-items:center;justify-content:space-between;padding:14px 16px;border-bottom:1px solid var(--border);background:var(--surface-2);">
+        <span style="font-size:15px;font-weight:600;color:var(--text-primary);display:flex;align-items:center;gap:8px;">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="width:16px;height:16px;color:var(--primary);"><path d="M5 12h14M12 5l7 7-7 7"/></svg>
+          出口实例
+        </span>
+        <span id="egress_card_count_label" style="font-size:12px;color:var(--text-secondary);"></span>
+      </div>
+      <div id="egress_status_blocks" style="display:flex;flex-direction:column;gap:12px;padding:16px;"></div>
+      <div id="egress_empty_hint" style="display:none;padding:28px 16px;text-align:center;color:var(--text-muted);font-size:13px;">
+        暂无出口实例。<br><span style="font-size:12px;color:var(--text-secondary);">点击上方「添加出站管理」创建第一个实例。</span>
+      </div>
+    </div>
     <!-- 出站管理专用：节点列表区（按选中出口过滤共享节点池，仅在该页内显示） -->
     <div id="egress_node_section" style="display:none; margin: 0 20px 24px 20px;">
       <div style="display: flex; align-items: center; justify-content: space-between; margin-bottom: 16px; flex-wrap: wrap; gap: 8px;">
