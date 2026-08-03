@@ -3719,40 +3719,30 @@ INDEX_HTML = r"""<!doctype html>
 <div class="content-body">
 
     <div id="page_overview" class="page-content">
-    <section class="active-node-section" id="active_node_card" style="margin-bottom: 24px;">
-      <!-- Rendered dynamically by render() -->
+    <section class="active-node-section" id="home_active_node_card" style="margin-bottom: 24px;">
+      <!-- 主页专用：按主页选中出口渲染当前活动节点卡。 -->
     </section>
+    <!-- 主页专用出口卡片：只读展示，不提供删除/添加入口，不联动节点列表。 -->
+    <div id="home_egress_blocks" style="display:flex;flex-direction:column;gap:12px;margin: 0 0 24px 0;"></div>
     </div>
 
-    <!-- 出口卡片区（主页 + 出站管理页共用同一组 DOM，由 JS 同时驱动） -->
-    <div id="egress_status_blocks" style="display:flex;flex-direction:column;gap:12px;margin: 0 0 24px 0;"></div>
-
-    <!-- 节点列表区（主页 + 出站管理页共用同一组 DOM；未选出口时显示空态提示） -->
-    <div id="overview_node_section" style="display:none;">
-      <div style="display: flex; align-items: center; justify-content: space-between; margin-bottom: 16px; flex-wrap: wrap; gap: 8px;">
-        <span style="font-size: 15px; font-weight: 600; color: var(--text-primary);">节点列表</span>
-        <span id="overview_filter_label" style="font-size: 12px; color: var(--text-secondary);"></span>
-      </div>
-
-      <div class="table-wrapper" style="margin-top: 0;">
-        <div class="table-container">
-          <table>
-            <thead>
-              <tr>
-                <th style="width: 90px;">状态</th>
-                <th style="width: 160px;">IP 地址 : 端口</th>
-                <th>物理位置</th>
-                <th style="width: 80px;">IP 类型</th>
-                <th style="width: 80px;">延迟</th>
-                <th style="width: 80px;">健康度</th>
-                <th style="width: 160px;">操作</th>
-              </tr>
-            </thead>
-            <tbody id="overview_rows"></tbody>
-          </table>
-        </div>
-      </div>
-    </div>
+    <!--
+      ============================================================
+      主页 / 出站管理 拆分说明（v3）：
+      之前两个页面共享同一组 DOM (#egress_status_blocks / #overview_node_section)
+      和同一套渲染函数 + 同一份 selectedEgressSlotId 状态，导致：
+        1. 主页点切换 → 出站管理页的选中态被同步切走
+        2. 出站管理页删除一个出口 → 主页的"已选中"指向已删除对象
+        3. 出站管理页点添加 → 主页和出站管理同步刷新，互相影响
+      拆分为两套完全独立的模块：
+        主页：home_egress_blocks + home_active_node_card + homeEgressStatusList +
+              homeSelectedEgressSlotId + renderHomeEgressCards + renderHomeActiveNodeCard
+        出站管理：egress_status_blocks + egress_active_node_card + egressStatusList +
+                   egressSelectedEgressSlotId + renderEgressCards + renderEgressActiveNodeCard +
+                   renderEgressNodeList
+      各自的状态、DOM、函数互不引用。switchPage 时分别控制显隐。
+      ============================================================
+    -->
 
     <div id="page_nodes" class="page-content" style="display:none;">
 
@@ -4350,14 +4340,12 @@ function stableSortNodes() {
   });
 }
 
-function renderActiveNodeCardForEgress(slotKey) {
-  // 按"当前选中出口"渲染顶部活动节点卡。
-  // - 默认出口 (__default__ / null)：从 state 拿（父进程自带状态）
-  // - 非默认出口：从 egressStatusList 拿（子进程轻量摘要），active_node_id 再去共享 nodes 池查详情
-  const card = $("active_node_card");
-  if (!card) return;
+// ---- 共享的活动节点卡 HTML 生成器（被主页和出站管理各调用一次） ----
+function _buildActiveNodeCardHTML(slotKey, statusList) {
+  // 按 slotKey 从 statusList 取数据，返回 HTML 字符串。
+  // 调用方负责写入各自的 DOM 容器（home_active_node_card / egress_active_node_card）。
   const isDefault = !slotKey || slotKey === "__default__";
-  const egress = (egressStatusList || []).find(function(e) {
+  const egress = (statusList || []).find(function(e) {
     return (isDefault && e.is_default) || (!isDefault && e.slot_id === slotKey);
   });
   let activeNodeId, isConnecting, lastCheckMessage, alive;
@@ -4378,7 +4366,7 @@ function renderActiveNodeCardForEgress(slotKey) {
   const disconnectHandler = isDefault ? "disconnectNode()" : ("disconnectEgress('" + escAttr(slotKey) + "')");
 
   if (isDown) {
-    card.innerHTML = `
+    return `
       <div class="active-card" style="background: var(--bg-surface); border-color: var(--border-color); box-shadow: none;">
         <div class="active-card-info">
           <div class="stat-icon-wrapper" style="background: rgba(148, 163, 184, 0.12); border-color: rgba(148, 163, 184, 0.20); width: 48px; height: 48px; border-radius: 12px;">
@@ -4395,11 +4383,10 @@ function renderActiveNodeCardForEgress(slotKey) {
         </div>
       </div>
     `;
-    return;
   }
 
   if (isConnecting && !activeNode) {
-    card.innerHTML = `
+    return `
       <div class="active-card" style="background: var(--bg-surface); border-color: var(--warning); box-shadow: 0 0 15px rgba(245, 158, 11, 0.15);">
         <div class="active-card-info">
           <div class="stat-icon-wrapper" style="background: rgba(245, 158, 11, 0.15); border-color: rgba(245, 158, 11, 0.3); width: 48px; height: 48px; border-radius: 12px;">
@@ -4417,7 +4404,6 @@ function renderActiveNodeCardForEgress(slotKey) {
         </div>
       </div>
     `;
-    return;
   }
 
   if (activeNode) {
@@ -4426,7 +4412,7 @@ function renderActiveNodeCardForEgress(slotKey) {
     const displayLocation = activeNode.location || translateCountry(activeNode.country) || "-";
     const countryName = translateCountry(activeNode.country) || "";
     const titleText = countryName ? countryName + " 节点" : titleLabel;
-    card.innerHTML = `
+    return `
       <div class="active-card">
         <div class="active-card-info">
           <div class="stat-icon-wrapper" style="background: rgba(16, 185, 129, 0.15); border-color: rgba(16, 185, 129, 0.3); width: 48px; height: 48px; border-radius: 12px;">
@@ -4455,11 +4441,10 @@ function renderActiveNodeCardForEgress(slotKey) {
         </button>
       </div>
     `;
-    return;
   }
 
   // 未连接
-  card.innerHTML = `
+  return `
     <div class="active-card" style="background: var(--bg-surface); border-color: var(--border-color); box-shadow: none;">
       <div class="active-card-info">
         <div class="stat-icon-wrapper" style="background: rgba(244, 63, 94, 0.1); border-color: rgba(244, 63, 94, 0.2); width: 48px; height: 48px; border-radius: 12px;">
@@ -4478,18 +4463,31 @@ function renderActiveNodeCardForEgress(slotKey) {
   `;
 }
 
+// ---- 主页活动节点卡（写 home_active_node_card，用 homeEgressStatusList） ----
+function renderHomeActiveNodeCard(slotKey) {
+  const card = $("home_active_node_card");
+  if (!card) return;
+  card.innerHTML = _buildActiveNodeCardHTML(slotKey, homeEgressStatusList);
+}
+
+// ---- 出站管理活动节点卡（写 egress_active_node_card，用 egressStatusList） ----
+function renderEgressActiveNodeCard(slotKey) {
+  const card = $("egress_active_node_card");
+  if (!card) return;
+  card.innerHTML = _buildActiveNodeCardHTML(slotKey, egressStatusList);
+}
+
+// 向后兼容：旧代码中可能还有调用 renderActiveNodeCardForEgress 的地方（如 render()）
+function renderActiveNodeCardForEgress(slotKey) { renderHomeActiveNodeCard(slotKey); }
+
 function render(){
   const activeNodeId = state.active_openvpn_node_id;
   const activeNode = nodes.find(n => n && (n.active || n.id === activeNodeId));
 
-  // 顶部活动节点卡：按"当前选中出口"动态渲染（默认/非默认共用同一卡片）
-  renderActiveNodeCardForEgress(selectedEgressSlotId || "__default__");
-
-  // overview_rows 的渲染已由 renderEgressNodeList() 接管（按 selectedEgressSlotId 过滤），
-  // 旧 renderOverviewNodes 仍然保留给节点管理页（page_nodes）使用，不在此处调用避免覆盖。
-  if (window.renderEgressNodeList && typeof selectedEgressSlotId !== "undefined" && selectedEgressSlotId) {
-    renderEgressNodeList();
-  }
+  // 顶部活动节点卡：写入主页专用容器 home_active_node_card（与出站管理页独立）
+  renderHomeActiveNodeCard(homeSelectedEgressSlotId || "__default__");
+  // 出站管理页的活动卡由 loadEgress() 单独控制刷新（只有出站管理页显示时才渲染）。
+  // 节点列表也是出站管理页专用（egress_rows），不在此处渲染。
 
   const shown = getFilteredNodes();
   console.log("[render] shown count:", shown.length, "currentPageNodes:", currentPageNodes.length);
@@ -5029,14 +5027,54 @@ function toggleSettingsSubmenu() {
 }
 
 // ============================================================
-// 出站管理卡片 + 节点列表：主页 / 出站管理页共用同一组 DOM 与同一套渲染函数
-// 选中态 (selectedEgressSlotId)：用户点哪个出口卡片，节点列表就按该出口的
-// routing_mode/force_country/routing_ip_type/min_health_score 过滤共享节点池。
+// 主页（page_overview）与出站管理（page_egress）—— 完全独立的两套模块
+//
+// 之前 v2 把两个页面共享同一组 DOM 和同一套渲染函数（共用 selectedEgressSlotId、
+// 共用 loadEgress、共用 renderEgressCards、共用 active_node_card / egress_status_blocks
+// / overview_node_section），导致：
+//   1. 主页点切换会同时切走出站管理页的选中态
+//   2. 出站管理页点删除/添加，主页的"已选中"指向已删除对象、需同步修复
+//   3. 用户希望在主页快速查看/切换，但不希望影响出站管理页的"管理"操作
+// 拆分为：
+//   主页：homeEgressStatusList + homeSelectedEgressSlotId + home_egress_blocks +
+//         home_active_node_card + renderHomeEgressCards + renderHomeActiveNodeCard +
+//         selectHomeEgressCard（只读 + 切换，不显示节点列表，不提供删除/添加）
+//   出站管理：egressStatusList + egressSelectedEgressSlotId + egress_status_blocks +
+//             egress_active_node_card + renderEgressCards + renderEgressActiveNodeCard +
+//             renderEgressNodeList + selectEgressCard（完整管理界面，含节点列表 / 删除 / 添加）
+// 双方状态、DOM、函数完全分离，互不引用。switchPage 分别控制显隐。
 // ============================================================
-let egressRegions = [];
-let egressStatusList = [];
-let selectedEgressSlotId = null;  // null = 未选中
+
+// ---- 主页模块（独立） ----
+let homeEgressStatusList = [];
+let homeSelectedEgressSlotId = null;  // null = 未选中（首次进入会自动选默认出口）
+
+// ---- 出站管理模块（独立） ----
+let egressRegions = [];               // 出站管理专用：从 /api/egress_regions 拉取的配置
+let egressStatusList = [];            // 出站管理专用：从 /api/egress_status_all 拉取的状态
+let egressSelectedEgressSlotId = null; // 出站管理页当前选中的出口（用于节点列表过滤）
+
+// ---- 主页加载（独立） ----
+async function loadHomeEgress() {
+  // 主页用 homeEgressStatusList，不影响出站管理页状态
+  renderHomeEgressCards();
+  try {
+    const statusResp = await fetchWithCsrf("./api/egress_status_all");
+    homeEgressStatusList = statusResp.egress || [];
+    // 主页默认自动选默认出口（首次进入 / 清空选择后）
+    if (homeSelectedEgressSlotId === null) {
+      const defaultEgress = homeEgressStatusList.find(function(e) { return e.is_default; });
+      if (defaultEgress) homeSelectedEgressSlotId = "__default__";
+    }
+    renderHomeEgressCards();
+    renderHomeActiveNodeCard(homeSelectedEgressSlotId || "__default__");
+  } catch (e) { console.error(e); }
+}
+async function loadHomeEgressStatus() { return loadHomeEgress(); }
+
+// ---- 出站管理加载（独立） ----
 async function loadEgress() {
+  // 出站管理用 egressStatusList/egressRegions，不影响主页
   renderEgressCards();
   try {
     const [statusResp, regionsResp] = await Promise.all([
@@ -5045,110 +5083,161 @@ async function loadEgress() {
     ]);
     egressStatusList = statusResp.egress || [];
     egressRegions = regionsResp.regions || [];
-    // 主页默认自动选择默认出口（首次加载 / 清空选择后）
-    if (selectedEgressSlotId === null) {
+    // 出站管理页默认选默认出口（首次进入 / 清空选择后）
+    if (egressSelectedEgressSlotId === null) {
       const defaultEgress = egressStatusList.find(function(e) { return e.is_default; });
-      if (defaultEgress) selectedEgressSlotId = "__default__";
+      if (defaultEgress) egressSelectedEgressSlotId = "__default__";
     }
     renderEgressCards();
-    renderActiveNodeCardForEgress(selectedEgressSlotId || "__default__");
+    renderEgressActiveNodeCard(egressSelectedEgressSlotId || "__default__");
   } catch (e) { console.error(e); }
 }
 async function loadEgressStatus() { return loadEgress(); }
+
 function escAttr(s) { return String(s || "").replace(/'/g, "&#39;").replace(/"/g, "&quot;").replace(/</g, "&lt;"); }
+
+// ---- 共享的卡片 HTML 构造器 ----
+// 主页（mode='home'）只提供断开按钮 + 选中切换，无删除；不可添加新实例。
+// 出站管理（mode='egress'）提供断开 + 删除（仅非默认）。
+function _buildEgressCardHTML(e, mode) {
+  const modeMap = {auto:"自动配置",fixed_ip:"固定IP",fixed_region:"固定地区",favorites:"收藏"};
+  const ipMap = {all:"所有IP",residential:"住宅IP",hosting:"机房IP"};
+  const modeText = modeMap[e.routing_mode] || (e.routing_mode || "自动");
+  const ipType = ipMap[e.routing_ip_type] || (e.routing_ip_type || "所有IP");
+  const isDefault = !!e.is_default;
+  const isDown = !e.alive;
+  const country = e.force_country ? translateCountry(e.force_country) : "自动";
+  const nodeInfo = e.active_node_id
+    ? ("节点 " + e.active_node_id)
+    : (e.last_check_message || (e.is_connecting ? "正在拉节点…" : "未连接"));
+  const port = e.proxy_port || 7928;
+  const titleLabel = isDefault ? "默认出口" : (e.name || e.slot_id);
+  const slotKey = isDefault ? "__default__" : e.slot_id;
+  const isSelected = (mode === "home" ? homeSelectedEgressSlotId : egressSelectedEgressSlotId) === slotKey;
+  const selectedStyle = isSelected
+    ? "outline: 2px solid var(--primary, #6366f1); outline-offset: -2px; box-shadow: 0 0 0 4px rgba(99,102,241,0.15);"
+    : "cursor: pointer;";
+  const iconColor = isDown ? "#94a3b8" : (isDefault ? "#10b981" : "var(--primary, #6366f1)");
+  const iconBg = isDown ? "rgba(148,163,184,0.12)" : (isDefault ? "rgba(16,185,129,0.15)" : "rgba(99,102,241,0.15)");
+  const iconBorder = isDown ? "rgba(148,163,184,0.20)" : (isDefault ? "rgba(16,185,129,0.30)" : "rgba(99,102,241,0.30)");
+  const iconPath = isDown
+    ? "<path d='M18.364 18.364A9 9 0 005.636 5.636m12.728 12.728A9 9 0 015.636 5.636m12.728 12.728L5.636 5.636'/>"
+    : "<path d='M13 10V3L4 14h7v7l9-11h-7z'/>";
+  const statusBadge = isDown
+    ? "<span class='badge' style='background: rgba(148,163,184,0.15); color: #64748b; border-color: rgba(148,163,184,0.3);'>未启动</span>"
+    : (e.active_node_id
+      ? "<span class='badge available'><span class='badge-pulse'></span>已连接</span>"
+      : (e.is_connecting
+        ? "<span class='badge' style='background: rgba(245,158,11,0.15); color: #f59e0b; border-color: rgba(245,158,11,0.3);'>连接中</span>"
+        : "<span class='badge available'><span class='badge-pulse'></span>运行中</span>"));
+  // 主页：只保留"断开"按钮；删除/添加入口仅在出站管理页。
+  let actions;
+  if (isDown) {
+    actions = "<span style='color:var(--text-muted);font-size:13px;'>未启动</span>";
+  } else if (mode === "home") {
+    actions = "<button class='btn-danger' style='height:36px;padding:0 14px;border-radius:8px;display:inline-flex;align-items:center;gap:6px;' onclick=\"event.stopPropagation();homeDisconnectEgress('" + escAttr(e.slot_id) + "')\">" +
+      "<svg viewBox='0 0 24 24' fill='none' stroke='currentColor' stroke-width='2' style='width:14px;height:14px;'><path d='M10 14l2-2m0 0l2-2m-2 2l-2-2m2 2l2 2m7-2a9 9 0 11-18 0 9 9 0 0118 0z'/></svg>" +
+      "断开" +
+      "</button>";
+  } else {
+    actions = "<button class='btn-danger' style='height:36px;padding:0 14px;border-radius:8px;display:inline-flex;align-items:center;gap:6px;' onclick=\"event.stopPropagation();disconnectEgress('" + escAttr(e.slot_id) + "')\">" +
+      "<svg viewBox='0 0 24 24' fill='none' stroke='currentColor' stroke-width='2' style='width:14px;height:14px;'><path d='M10 14l2-2m0 0l2-2m-2 2l-2-2m2 2l2 2m7-2a9 9 0 11-18 0 9 9 0 0118 0z'/></svg>" +
+      "断开" +
+      "</button>" +
+      (!isDefault
+        ? "<button class='btn-ghost' style='height:36px;padding:0 12px;border-radius:8px;margin-left:8px;display:inline-flex;align-items:center;gap:6px;' onclick=\"event.stopPropagation();delEgress('" + escAttr(e.slot_id) + "')\">" +
+          "<svg viewBox='0 0 24 24' fill='none' stroke='currentColor' stroke-width='2' style='width:14px;height:14px;'><path d='M3 6h18M8 6V4a2 2 0 012-2h4a2 2 0 012 2v2m3 0v14a2 2 0 01-2 2H7a2 2 0 01-2-2V6h14z'/></svg>" +
+          "删除" +
+          "</button>"
+        : "");
+  }
+  const selectHandler = mode === "home" ? "selectHomeEgressCard" : "selectEgressCard";
+  return "<div class='active-card' style='" + selectedStyle + "' onclick=\"" + selectHandler + "('" + escAttr(slotKey) + "')\">" +
+    "<div class='active-card-info'>" +
+      "<div class='stat-icon-wrapper' style='background: " + iconBg + "; border-color: " + iconBorder + "; width: 48px; height: 48px; border-radius: 12px;'>" +
+        "<svg xmlns='http://www.w3.org/2000/svg' class='stat-icon' fill='none' viewBox='0 0 24 24' stroke='currentColor' stroke-width='2.5' style='color: " + iconColor + "; width: 24px; height: 24px;'>" + iconPath + "</svg>" +
+      "</div>" +
+      "<div class='active-card-details'>" +
+        "<div class='active-card-title'>" +
+          statusBadge +
+          "<strong>" + escAttr(titleLabel) + "</strong>" +
+          "<span class='port-num' style='font-family: ui-monospace, \"SF Mono\", Menlo, monospace; font-size: 13px; color: var(--primary, #6366f1); background: rgba(99,102,241,0.08); padding: 2px 8px; border-radius: 6px;'>端口 " + port + "</span>" +
+          (isSelected ? "<span style='font-size:11px;color:var(--primary,#6366f1);background:rgba(99,102,241,0.1);padding:2px 8px;border-radius:6px;'>● 已选中</span>" : "") +
+        "</div>" +
+        "<div class='active-card-meta' style='margin-top: 4px;'>" +
+          "<span>模式: <strong>" + escAttr(modeText) + "</strong></span>" +
+          "<span style='margin-left: 12px;'>国家: <strong>" + escAttr(country) + "</strong></span>" +
+          "<span style='margin-left: 12px;'>类型: <strong>" + escAttr(ipType) + "</strong></span>" +
+          "<span style='margin-left: 12px;'>节点: <strong>" + escAttr(nodeInfo) + "</strong></span>" +
+        "</div>" +
+      "</div>" +
+    "</div>" +
+    "<div onclick=\"event.stopPropagation();\">" + actions + "</div>" +
+  "</div>";
+}
+
+// 默认出口固定第一；其余按 slot_id 中的数字倒序（最新创建的在前）。
+function _sortEgressForDisplay(list) {
+  const def = list.find(function(e) { return e && e.is_default; });
+  const rest = list.filter(function(e) { return e && !e.is_default; });
+  rest.sort(function(a, b) {
+    const na = parseInt(String(a.slot_id || "").replace(/[^0-9]/g, ""), 10);
+    const nb = parseInt(String(b.slot_id || "").replace(/[^0-9]/g, ""), 10);
+    const va = Number.isFinite(na) ? na : -1;
+    const vb = Number.isFinite(nb) ? nb : -1;
+    return vb - va;  // 倒序：数字大的在前（最新创建）
+  });
+  return def ? [def].concat(rest) : rest;
+}
+
+// ---- 主页卡片渲染（写 home_egress_blocks，只读 + 断开，不提供删除/添加/节点列表） ----
+function renderHomeEgressCards() {
+  const box = $("home_egress_blocks");
+  if (!box) return;
+  const list = _sortEgressForDisplay(homeEgressStatusList || []);
+  if (!list.length) { box.innerHTML = ""; return; }
+  box.innerHTML = list.map(function(e) { return _buildEgressCardHTML(e, "home"); }).join("");
+}
+
+// ---- 出站管理卡片渲染（写 egress_status_blocks，含断开 + 删除 + 节点列表） ----
 function renderEgressCards() {
   const box = $("egress_status_blocks");
   if (!box) return;
-  const list = egressStatusList;
+  const list = _sortEgressForDisplay(egressStatusList || []);
   if (!list.length) { box.innerHTML = ""; renderEgressNodeList(); return; }
-  box.innerHTML = list.map(function(e) {
-    const modeMap = {auto:"自动配置",fixed_ip:"固定IP",fixed_region:"固定地区",favorites:"收藏"};
-    const ipMap = {all:"所有IP",residential:"住宅IP",hosting:"机房IP"};
-    const mode = modeMap[e.routing_mode] || (e.routing_mode || "自动");
-    const ipType = ipMap[e.routing_ip_type] || (e.routing_ip_type || "所有IP");
-    const isDefault = !!e.is_default;
-    const isDown = !e.alive;
-    const country = e.force_country ? translateCountry(e.force_country) : "自动";
-    const nodeInfo = e.active_node_id
-      ? ("节点 " + e.active_node_id)
-      : (e.last_check_message || (e.is_connecting ? "正在拉节点…" : "未连接"));
-    const port = e.proxy_port || 7928;
-    const titleLabel = isDefault ? "默认出口" : (e.name || e.slot_id);
-    const slotKey = isDefault ? "__default__" : e.slot_id;
-    const isSelected = selectedEgressSlotId === slotKey;
-    const selectedStyle = isSelected
-      ? "outline: 2px solid var(--primary, #6366f1); outline-offset: -2px; box-shadow: 0 0 0 4px rgba(99,102,241,0.15);"
-      : "cursor: pointer;";
-    const iconColor = isDown ? "#94a3b8" : (isDefault ? "#10b981" : "var(--primary, #6366f1)");
-    const iconBg = isDown ? "rgba(148,163,184,0.12)" : (isDefault ? "rgba(16,185,129,0.15)" : "rgba(99,102,241,0.15)");
-    const iconBorder = isDown ? "rgba(148,163,184,0.20)" : (isDefault ? "rgba(16,185,129,0.30)" : "rgba(99,102,241,0.30)");
-    const iconPath = isDown
-      ? "<path d='M18.364 18.364A9 9 0 005.636 5.636m12.728 12.728A9 9 0 015.636 5.636m12.728 12.728L5.636 5.636'/>"
-      : "<path d='M13 10V3L4 14h7v7l9-11h-7z'/>";
-    const statusBadge = isDown
-      ? "<span class='badge' style='background: rgba(148,163,184,0.15); color: #64748b; border-color: rgba(148,163,184,0.3);'>未启动</span>"
-      : (e.active_node_id
-        ? "<span class='badge available'><span class='badge-pulse'></span>已连接</span>"
-        : (e.is_connecting
-          ? "<span class='badge' style='background: rgba(245,158,11,0.15); color: #f59e0b; border-color: rgba(245,158,11,0.3);'>连接中</span>"
-          : "<span class='badge available'><span class='badge-pulse'></span>运行中</span>"));
-    const actions = isDown
-      ? "<span style='color:var(--text-muted);font-size:13px;'>未启动</span>"
-      // 卡片右侧：始终保留"断开"（停止当前隧道）；非默认出口额外提供"删除"
-      // （移除该实例、释放端口与子进程）。两个按钮职责清晰、互不冲突。
-      : "<button class='btn-danger' style='height:36px;padding:0 14px;border-radius:8px;display:inline-flex;align-items:center;gap:6px;' onclick=\"event.stopPropagation();disconnectEgress('" + escAttr(e.slot_id) + "')\">" +
-        "<svg viewBox='0 0 24 24' fill='none' stroke='currentColor' stroke-width='2' style='width:14px;height:14px;'><path d='M10 14l2-2m0 0l2-2m-2 2l-2-2m2 2l2 2m7-2a9 9 0 11-18 0 9 9 0 0118 0z'/></svg>" +
-        "断开" +
-        "</button>" +
-        (!isDefault
-          ? "<button class='btn-ghost' style='height:36px;padding:0 12px;border-radius:8px;margin-left:8px;display:inline-flex;align-items:center;gap:6px;' onclick=\"event.stopPropagation();delEgress('" + escAttr(e.slot_id) + "')\">" +
-            "<svg viewBox='0 0 24 24' fill='none' stroke='currentColor' stroke-width='2' style='width:14px;height:14px;'><path d='M3 6h18M8 6V4a2 2 0 012-2h4a2 2 0 012 2v2m3 0v14a2 2 0 01-2 2H7a2 2 0 01-2-2V6h14z'/></svg>" +
-            "删除" +
-            "</button>"
-          : "");
-    return "<div class='active-card' style='" + selectedStyle + "' onclick=\"selectEgress('" + escAttr(slotKey) + "')\">" +
-      "<div class='active-card-info'>" +
-        "<div class='stat-icon-wrapper' style='background: " + iconBg + "; border-color: " + iconBorder + "; width: 48px; height: 48px; border-radius: 12px;'>" +
-          "<svg xmlns='http://www.w3.org/2000/svg' class='stat-icon' fill='none' viewBox='0 0 24 24' stroke='currentColor' stroke-width='2.5' style='color: " + iconColor + "; width: 24px; height: 24px;'>" + iconPath + "</svg>" +
-        "</div>" +
-        "<div class='active-card-details'>" +
-          "<div class='active-card-title'>" +
-            statusBadge +
-            "<strong>" + escAttr(titleLabel) + "</strong>" +
-            "<span class='port-num' style='font-family: ui-monospace, \"SF Mono\", Menlo, monospace; font-size: 13px; color: var(--primary, #6366f1); background: rgba(99,102,241,0.08); padding: 2px 8px; border-radius: 6px;'>端口 " + port + "</span>" +
-            (isSelected ? "<span style='font-size:11px;color:var(--primary,#6366f1);background:rgba(99,102,241,0.1);padding:2px 8px;border-radius:6px;'>● 已选中</span>" : "") +
-          "</div>" +
-          "<div class='active-card-meta' style='margin-top: 4px;'>" +
-            "<span>模式: <strong>" + escAttr(mode) + "</strong></span>" +
-            "<span style='margin-left: 12px;'>国家: <strong>" + escAttr(country) + "</strong></span>" +
-            "<span style='margin-left: 12px;'>类型: <strong>" + escAttr(ipType) + "</strong></span>" +
-            "<span style='margin-left: 12px;'>节点: <strong>" + escAttr(nodeInfo) + "</strong></span>" +
-          "</div>" +
-        "</div>" +
-      "</div>" +
-      "<div onclick=\"event.stopPropagation();\">" + actions + "</div>" +
-    "</div>";
-  }).join("");
+  box.innerHTML = list.map(function(e) { return _buildEgressCardHTML(e, "egress"); }).join("");
   renderEgressNodeList();
 }
-function selectEgress(slotKey) {
-  selectedEgressSlotId = slotKey;
-  renderEgressCards();
-  // 顶部活动节点卡同步切换到选中出口
-  renderActiveNodeCardForEgress(slotKey);
+
+// ---- 主页：选中卡片（只影响主页状态，不影响出站管理页） ----
+function selectHomeEgressCard(slotKey) {
+  homeSelectedEgressSlotId = slotKey;
+  renderHomeEgressCards();
+  renderHomeActiveNodeCard(slotKey);
 }
+
+// ---- 出站管理：选中卡片（只影响出站管理页状态） ----
+function selectEgressCard(slotKey) {
+  egressSelectedEgressSlotId = slotKey;
+  renderEgressCards();
+  renderEgressActiveNodeCard(slotKey);
+}
+
+// 兼容旧名（若旧代码还在引用 selectEgress / selectedEgressSlotId）
+function selectEgress(slotKey) { selectEgressCard(slotKey); }
+
+// ---- 出站管理页：节点列表（独立 DOM 容器 egress_node_section / egress_rows / egress_filter_label） ----
 async function renderEgressNodeList() {
-  const section = $("overview_node_section");
-  const rows = $("overview_rows");
-  const label = $("overview_filter_label");
+  const section = $("egress_node_section");
+  const rows = $("egress_rows");
+  const label = $("egress_filter_label");
   if (!section || !rows || !label) return;
-  // 主页(overview)永不显示节点列表——按用户要求避免与出站管理页内容重复。
-  // 仅当当前处于出站管理页(page_egress)且选中了一个出口时，才显示列表。
+  // 仅当处于出站管理页 + 选中了一个出口时显示
   const inEgressPage = (function() {
     const p = document.getElementById("page_egress");
     return p && p.style.display !== "none";
   })();
-  if (!inEgressPage || !selectedEgressSlotId) {
+  if (!inEgressPage || !egressSelectedEgressSlotId) {
     section.style.display = "none";
     rows.innerHTML = "";
     return;
@@ -5157,10 +5246,10 @@ async function renderEgressNodeList() {
   // 拉取该出口的路由配置（默认 / 子出口各异）
   let cfg = null;
   try {
-    const r = await fetchWithCsrf("./api/egress_routing_config?slot_id=" + encodeURIComponent(selectedEgressSlotId));
+    const r = await fetchWithCsrf("./api/egress_routing_config?slot_id=" + encodeURIComponent(egressSelectedEgressSlotId));
     cfg = (r && r.config) || null;
   } catch (e) { cfg = null; }
-  const slotKey = selectedEgressSlotId;
+  const slotKey = egressSelectedEgressSlotId;
   const slotIsDefault = (slotKey === "__default__");
   const routingMode = (cfg && cfg.routing_mode) || (slotIsDefault ? (state.routing_mode || "auto") : "auto");
   const forceCountry = (cfg && cfg.force_country) || (slotIsDefault ? (state.force_country || "") : "");
@@ -5316,14 +5405,26 @@ async function delEgress(slotId) {
   if (!data.ok) { alert("删除失败：" + (data.error || "")); return; }
   egressRegions = data.regions || [];
   egressStatusList = egressStatusList.filter(function(x) { return x.slot_id !== slotId; });
-  if (selectedEgressSlotId === slotId) selectedEgressSlotId = null;
+  if (egressSelectedEgressSlotId === slotId) egressSelectedEgressSlotId = null;
   renderEgressCards();
-  renderActiveNodeCardForEgress(selectedEgressSlotId || "__default__");
+  renderEgressActiveNodeCard(egressSelectedEgressSlotId || "__default__");
+}
+// 主页断开按钮：断开后刷新主页（不影响出站管理页）
+async function homeDisconnectEgress(slotId) {
+  const isDefault = !slotId || slotId === "__default__";
+  if (isDefault) { disconnectNode(); return; }
+  if (!confirm("确定断开该出口？该出口的隧道将停止")) return;
+  try {
+    const data = await fetchWithCsrf("./api/egress_disconnect", { method: "POST", body: JSON.stringify({ slot_id: slotId }) });
+    if (!data.ok) { alert("断开失败：" + (data.error || "")); return; }
+    await loadHomeEgress();
+  } catch (e) { alert("请求断开连接失败"); }
 }
 async function disconnectEgress(slotId) {
   if (!confirm("确定断开该出站管理？该出口的隧道将停止")) return;
   const data = await fetchWithCsrf("./api/egress_disconnect", { method: "POST", body: JSON.stringify({ slot_id: slotId }) });
   if (!data.ok) { alert("断开失败：" + (data.error || "")); return; }
+  // 只刷新出站管理页（不影响主页）
   if (window.loadEgress) loadEgress();
 }
 
@@ -5335,14 +5436,18 @@ function switchPage(name) {
   var nav = document.getElementById("nav_" + name);
   if (nav) nav.classList.add("active");
   localStorage.setItem("vpngate_page", name);
-  // 出口卡片：主页 + 出站管理页都显示
-  var sharedBlocks = document.getElementById("egress_status_blocks");
-  // 节点列表：仅出站管理页 + 已选出口时显示（主页移除节点列表，避免与出站管理页内容重复）
-  var sharedSection = document.getElementById("overview_node_section");
-  if (sharedBlocks) sharedBlocks.style.display = (name === "overview" || name === "egress") ? "flex" : "none";
-  if (sharedSection) sharedSection.style.display = (name === "egress" && selectedEgressSlotId) ? "" : "none";
+  // ---- 拆分后的显隐控制 ----
+  var homeBlocks = document.getElementById("home_egress_blocks");
+  var egressBlocks = document.getElementById("egress_status_blocks");
+  var egressNodeSection = document.getElementById("egress_node_section");
+  // 主页专用 DOM
+  if (homeBlocks) homeBlocks.style.display = (name === "overview") ? "flex" : "none";
+  // 出站管理专用 DOM
+  if (egressBlocks) egressBlocks.style.display = (name === "egress") ? "flex" : "none";
+  if (egressNodeSection) egressNodeSection.style.display = "none"; // 由 renderEgressNodeList 自行控制
+  // 数据加载
   if (name === "egress") loadEgress();
-  else if (name === "overview") loadEgressStatus();
+  else if (name === "overview") loadHomeEgress();
 }
 
 async function doRefreshNodes(){ 
@@ -5936,7 +6041,8 @@ async function saveNetwork(e) {
       setTimeout(() => {
         closeNetworkModal();
         if (typeof load === "function") load();
-        if (typeof loadEgressStatus === "function") loadEgressStatus();
+        // 同时刷新主页和出站管理页
+        if (typeof loadHomeEgressStatus === "function") loadHomeEgressStatus();
         if (typeof loadEgress === "function") loadEgress();
       }, 1200);
     } else {
@@ -5979,15 +6085,26 @@ setInterval(async () => {
       stableSortNodes();
       updateCountryFilter();
       render();
+      // 主页活动节点卡 + 主页卡片（与 render 解耦）
+      if (typeof renderHomeActiveNodeCard === "function") renderHomeActiveNodeCard(homeSelectedEgressSlotId || "__default__");
+      if (typeof loadHomeEgress === "function") {
+        try { await loadHomeEgress(); } catch (e) {}
+      }
     } catch(e) {}
   }
 }, 10000);
 
-// 同样每 10 秒刷一次出口状态（含子出口健康/连接摘要），让顶部活动节点卡
-// 在用户未点击卡片时也能动态反映所选出口的真实状态。
+// 同样每 10 秒刷一次出口状态（含子出口健康/连接摘要），让主页/出站管理顶部的
+// 活动节点卡在用户未点击卡片时也能动态反映所选出口的真实状态。
+// 主页和出站管理各刷各的，互不干扰。
 setInterval(async () => {
-  if (typeof state !== "undefined" && document.visibilityState === "visible" && typeof loadEgress === "function") {
-    try { await loadEgress(); } catch(e) {}
+  if (typeof state !== "undefined" && document.visibilityState === "visible") {
+    if (typeof loadHomeEgress === "function") {
+      try { await loadHomeEgress(); } catch(e) {}
+    }
+    if (typeof loadEgress === "function") {
+      try { await loadEgress(); } catch(e) {}
+    }
   }
 }, 10000);
 let gatewayPollInterval = null;
@@ -6219,8 +6336,37 @@ URL.revokeObjectURL(url);
           </button>
         </div>
       </div>
-      <div id="page_egress_hint" style="color: var(--text-muted); font-size: 12px; text-align: right;">点击下方任一卡片查看其可用节点列表；点击卡片右侧"删除"按钮可移除该出站管理实例。</div>
+      <div id="page_egress_hint" style="color: var(--text-muted); font-size: 12px; text-align: right;">点击下方任一卡片查看其可用节点列表；点击卡片右侧"删除"按钮可移除该出站管理实例。新添加的实例会出现在列表顶部。</div>
     </section>
+    <!-- 出站管理专用：顶部活动节点卡（按出站管理页选中出口渲染，与主页独立） -->
+    <section class="active-node-section" id="egress_active_node_card" style="margin: 0 20px 24px 20px;"></section>
+    <!-- 出站管理专用：出口卡片区（只在该页内显示，与主页完全独立） -->
+    <div id="egress_status_blocks" style="display:flex;flex-direction:column;gap:12px;margin: 0 20px 24px 20px;"></div>
+    <!-- 出站管理专用：节点列表区（按选中出口过滤共享节点池，仅在该页内显示） -->
+    <div id="egress_node_section" style="display:none; margin: 0 20px 24px 20px;">
+      <div style="display: flex; align-items: center; justify-content: space-between; margin-bottom: 16px; flex-wrap: wrap; gap: 8px;">
+        <span style="font-size: 15px; font-weight: 600; color: var(--text-primary);">节点列表</span>
+        <span id="egress_filter_label" style="font-size: 12px; color: var(--text-secondary);"></span>
+      </div>
+      <div class="table-wrapper" style="margin-top: 0;">
+        <div class="table-container">
+          <table>
+            <thead>
+              <tr>
+                <th style="width: 90px;">状态</th>
+                <th style="width: 160px;">IP 地址 : 端口</th>
+                <th>物理位置</th>
+                <th style="width: 80px;">IP 类型</th>
+                <th style="width: 80px;">延迟</th>
+                <th style="width: 80px;">健康度</th>
+                <th style="width: 160px;">操作</th>
+              </tr>
+            </thead>
+            <tbody id="egress_rows"></tbody>
+          </table>
+        </div>
+      </div>
+    </div>
   </div>
 
 </main>
