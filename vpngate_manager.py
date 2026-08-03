@@ -5411,10 +5411,17 @@ function selectHomeEgressCard(slotKey) {
 }
 
 // ---- 出站管理：选中卡片（只影响出站管理页状态） ----
-function selectEgressCard(slotKey) {
+async function selectEgressCard(slotKey) {
   egressSelectedEgressSlotId = slotKey;
+  // 1) 先刷新卡片列表（高亮选中项）。注意：卡片渲染内部也会触发一次
+  //    renderEgressNodeList，但这里在下面再显式 await 一次，确保以最终选中的
+  //    slotKey 重新拉取路由配置并渲染节点列表，避免异步时序导致的"点了没反应"。
   renderEgressCards();
+  // 2) 活动节点卡：按选中出口渲染其连接信息（默认走 state，子出口走 egressStatusList）。
   renderEgressActiveNodeCard(slotKey);
+  // 3) 节点列表：显式 await，确保选中的出口一定刷新出自己的可用节点列表
+  //    （默认出口与新增出口走完全相同的逻辑，行为一致）。
+  await renderEgressNodeList();
 }
 
 // 兼容旧名（若旧代码还在引用 selectEgress / selectedEgressSlotId）
@@ -5437,12 +5444,20 @@ async function renderEgressNodeList() {
     return;
   }
   section.style.display = "";
-  // 拉取该出口的路由配置（默认 / 子出口各异）
+  // 拉取该出口的路由配置（默认 / 子出口各异）。
+  // 注意：fetchWithCsrf 在 HTTP 非 2xx 时会抛异常；这里不能静默吞掉，
+  // 否则 cfg=null 会让节点列表退化成"自动"（显示全部节点），看起来就像"点了没反应"。
   let cfg = null;
   try {
     const r = await fetchWithCsrf("./api/egress_routing_config?slot_id=" + encodeURIComponent(egressSelectedEgressSlotId));
     cfg = (r && r.config) || null;
-  } catch (e) { cfg = null; }
+    if (!cfg) {
+      console.warn("[renderEgressNodeList] 出口 " + slotKey + " 的路由配置为空，将按自动模式展示全部节点。");
+    }
+  } catch (e) {
+    console.error("[renderEgressNodeList] 拉取出站 " + slotKey + " 路由配置失败：", e);
+    cfg = null;
+  }
   const slotKey = egressSelectedEgressSlotId;
   const slotIsDefault = (slotKey === "__default__");
   const routingMode = (cfg && cfg.routing_mode) || (slotIsDefault ? (state.routing_mode || "auto") : "auto");
