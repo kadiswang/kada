@@ -140,12 +140,28 @@ class RegionProcess:
     def stop(self) -> None:
         if self.proc is None:
             return
+        pid = self.proc.pid
         try:
-            self.proc.terminate()
+            if sys.platform.startswith("win"):
+                # Windows：taskkill /T 杀整棵进程树（含孙进程如 OpenVPN），
+                # 否则仅 terminate 直接子进程时，OpenVPN（孙进程）可能被遗留并
+                # 继续占用 tun 设备/端口，导致下次新建出口 TUNSETIFF busy 或端口冲突。
+                subprocess.run(
+                    ["taskkill", "/PID", str(pid), "/T", "/F"],
+                    stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                )
+            else:
+                try:
+                    os.kill(pid, 9)
+                except Exception:
+                    self.proc.kill()
+        except Exception:
             try:
-                self.proc.wait(timeout=8)
-            except subprocess.TimeoutExpired:
                 self.proc.kill()
+            except Exception:
+                pass
+        try:
+            self.proc.wait(timeout=8)
         except Exception:
             pass
         self.proc = None
@@ -217,14 +233,15 @@ class SlotOrchestrator:
         # 所以子出口需要 +1 偏移：第一个子出口用 tun1，第二个用 tun2，以此类推。
         tuned_slots = []
         for ci, cfg in enumerate(desired):
-            if cfg.tun_dev and cfg.tun_dev.startswith("tun"):
-                try:
-                    num = int(cfg.tun_dev[len("tun"):])
-                    old_tun = cfg.tun_dev
-                    cfg.tun_dev = f"tun{num + 1}"
-                    tuned_slots.append(f"{cfg.slot_id}: {old_tun}→{cfg.tun_dev}")
-                except (ValueError, IndexError):
-                    pass  # 非标准命名（如用户自定义），不自动调整
+            # 子出口固定使用 tun{ci+1}（ci=0 -> tun1, ci=1 -> tun2, ...），
+            # 始终避开父进程（默认出口）占用的 tun0。基于列表索引计算，
+            # 而非在已有 tun_dev 上 +1，这样多次 sync 不会让 tun_dev 持续累加
+            # （tun0->tun1->tun2->... 失控），避免系统 tun 设备号耗尽。
+            expected = f"tun{ci + 1}"
+            if cfg.tun_dev != expected:
+                old_tun = cfg.tun_dev
+                cfg.tun_dev = expected
+                tuned_slots.append(f"{cfg.slot_id}: {old_tun}->{cfg.tun_dev}")
         if tuned_slots:
             print(f"[sync] TUN 设备偏移（避开父进程 tun0）：{', '.join(tuned_slots)}", flush=True)
 
