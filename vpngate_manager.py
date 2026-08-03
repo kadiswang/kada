@@ -2293,6 +2293,9 @@ def collector_loop() -> None:
     while True:
         last_collector_heartbeat = time.time()
         success = False
+        # 提前初始化 res，避免子出口分支（仅在 else 赋值）走到末尾 f-string 时
+        # 触发 UnboundLocalError，从而连续刷出 "check error: cannot access local variable 'res'" 错误。
+        res = "子出口周期（共享节点池模式）"
         try:
             if os.environ.get("VPNGATE_SHARED_NODES"):
                 # 子出口进程：消费共享节点池，不重复拉取官方 API 与测速
@@ -4339,14 +4342,56 @@ function stableSortNodes() {
   });
 }
 
-function render(){
-  const activeNodeId = state.active_openvpn_node_id;
-  const activeNode = nodes.find(n => n && (n.active || n.id === activeNodeId));
-  
-  // Render separated Active Node Card
-  const activeCardContainer = $("active_node_card");
-  if (state.is_connecting && !activeNode) {
-    activeCardContainer.innerHTML = `
+function renderActiveNodeCardForEgress(slotKey) {
+  // 按"当前选中出口"渲染顶部活动节点卡。
+  // - 默认出口 (__default__ / null)：从 state 拿（父进程自带状态）
+  // - 非默认出口：从 egressStatusList 拿（子进程轻量摘要），active_node_id 再去共享 nodes 池查详情
+  const card = $("active_node_card");
+  if (!card) return;
+  const isDefault = !slotKey || slotKey === "__default__";
+  const egress = (egressStatusList || []).find(function(e) {
+    return (isDefault && e.is_default) || (!isDefault && e.slot_id === slotKey);
+  });
+  let activeNodeId, isConnecting, lastCheckMessage, alive;
+  if (isDefault) {
+    activeNodeId = (state && state.active_openvpn_node_id) || "";
+    isConnecting = !!(state && state.is_connecting);
+    lastCheckMessage = (state && state.last_check_message) || "";
+    alive = true;
+  } else {
+    activeNodeId = (egress && egress.active_node_id) || "";
+    isConnecting = !!(egress && egress.is_connecting);
+    lastCheckMessage = (egress && egress.last_check_message) || "";
+    alive = !egress || egress.alive !== false;
+  }
+  const activeNode = activeNodeId ? (nodes || []).find(function(n) { return n && n.id === activeNodeId; }) : null;
+  const titleLabel = isDefault ? "默认出口" : ((egress && (egress.name || egress.slot_id)) || slotKey);
+  const isDown = !isDefault && !alive;
+  const disconnectHandler = isDefault ? "disconnectNode()" : ("disconnectEgress('" + escAttr(slotKey) + "')");
+
+  if (isDown) {
+    card.innerHTML = `
+      <div class="active-card" style="background: var(--bg-surface); border-color: var(--border-color); box-shadow: none;">
+        <div class="active-card-info">
+          <div class="stat-icon-wrapper" style="background: rgba(148, 163, 184, 0.12); border-color: rgba(148, 163, 184, 0.20); width: 48px; height: 48px; border-radius: 12px;">
+            <svg xmlns="http://www.w3.org/2000/svg" class="stat-icon" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2.5" style="color: #94a3b8; width: 24px; height: 24px;"><path stroke-linecap="round" stroke-linejoin="round" d="M18.364 18.364A9 9 0 005.636 5.636m12.728 12.728A9 9 0 015.636 5.636m12.728 12.728L5.636 5.636" /></svg>
+          </div>
+          <div class="active-card-details">
+            <div class="active-card-title" style="color: var(--text-secondary);">
+              <span class="badge" style="background: rgba(148,163,184,0.15); color: #64748b; border-color: rgba(148,163,184,0.3);">未启动</span> ${esc(titleLabel)} 尚未启动
+            </div>
+            <div class="active-card-meta" style="margin-top: 4px;">
+              该出口的子进程未运行，请前往【出站代理】页检查或重新启动。
+            </div>
+          </div>
+        </div>
+      </div>
+    `;
+    return;
+  }
+
+  if (isConnecting && !activeNode) {
+    card.innerHTML = `
       <div class="active-card" style="background: var(--bg-surface); border-color: var(--warning); box-shadow: 0 0 15px rgba(245, 158, 11, 0.15);">
         <div class="active-card-info">
           <div class="stat-icon-wrapper" style="background: rgba(245, 158, 11, 0.15); border-color: rgba(245, 158, 11, 0.3); width: 48px; height: 48px; border-radius: 12px;">
@@ -4354,21 +4399,26 @@ function render(){
           </div>
           <div class="active-card-details">
             <div class="active-card-title" style="color: var(--text-primary);">
-              <span class="badge" style="background: rgba(245, 158, 11, 0.15); color: #f59e0b; border-color: rgba(245, 158, 11, 0.3);"><span class="badge-pulse" style="background: #f59e0b;"></span>正在连接</span>
-              <strong>${esc(state.active_node_latency || '正在连接...')}</strong>
+              <span class="badge" style="background: rgba(245, 158, 11, 0.15); color: #f59e0b; border-color: rgba(245, 158, 11, 0.3);"><span class="badge-pulse" style="background: #f59e0b;"></span>连接中</span>
+              <strong>${esc(titleLabel)}</strong>
             </div>
             <div class="active-card-meta" style="margin-top: 4px;">
-              ${esc(state.last_check_message || '正在与 VPN 节点建立加密隧道，请稍候...')}
+              ${esc(lastCheckMessage || '正在与 VPN 节点建立加密隧道，请稍候...')}
             </div>
           </div>
         </div>
       </div>
     `;
-  } else if (activeNode) {
+    return;
+  }
+
+  if (activeNode) {
     const latencyClass = getLatencyClass(activeNode.latency_ms);
     const latencyText = activeNode.latency_ms ? `<span class="latency-val ${latencyClass}">${activeNode.latency_ms} ms</span>` : "-";
     const displayLocation = activeNode.location || translateCountry(activeNode.country) || "-";
-    activeCardContainer.innerHTML = `
+    const countryName = translateCountry(activeNode.country) || "";
+    const titleText = countryName ? countryName + " 节点" : titleLabel;
+    card.innerHTML = `
       <div class="active-card">
         <div class="active-card-info">
           <div class="stat-icon-wrapper" style="background: rgba(16, 185, 129, 0.15); border-color: rgba(16, 185, 129, 0.3); width: 48px; height: 48px; border-radius: 12px;">
@@ -4377,7 +4427,8 @@ function render(){
           <div class="active-card-details">
             <div class="active-card-title">
               <span class="badge available"><span class="badge-pulse"></span>已连接</span>
-              <strong>${esc(translateCountry(activeNode.country))} 节点</strong>
+              <strong>${esc(titleText)}</strong>
+              <span class="port-num" style="font-family: ui-monospace, \\"SF Mono\\", Menlo, monospace; font-size: 13px; color: var(--text-muted); background: rgba(99,102,241,0.08); padding: 2px 8px; border-radius: 6px;">${esc(titleLabel)}</span>
             </div>
             <div class="active-card-value mono" style="font-size: 20px; margin-top: 2px;">
               ${esc(activeNode.ip || activeNode.remote_host)}:${activeNode.remote_port || ""}
@@ -4390,31 +4441,41 @@ function render(){
             </div>
           </div>
         </div>
-        <button class="btn-danger" style="height: 38px; padding: 0 16px; border-radius: 8px;" onclick="disconnectNode()">
+        <button class="btn-danger" style="height: 38px; padding: 0 16px; border-radius: 8px;" onclick="${disconnectHandler}">
           <svg xmlns="http://www.w3.org/2000/svg" style="width:16px; height:16px;" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><path stroke-linecap="round" stroke-linejoin="round" d="M10 14l2-2m0 0l2-2m-2 2l-2-2m2 2l2 2m7-2a9 9 0 11-18 0 9 9 0 0118 0z" /></svg>
           断开连接
         </button>
       </div>
     `;
-  } else {
-    activeCardContainer.innerHTML = `
-      <div class="active-card" style="background: var(--bg-surface); border-color: var(--border-color); box-shadow: none;">
-        <div class="active-card-info">
-          <div class="stat-icon-wrapper" style="background: rgba(244, 63, 94, 0.1); border-color: rgba(244, 63, 94, 0.2); width: 48px; height: 48px; border-radius: 12px;">
-            <svg xmlns="http://www.w3.org/2000/svg" class="stat-icon" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2.5" style="color: var(--danger); width: 24px; height: 24px;"><path stroke-linecap="round" stroke-linejoin="round" d="M18.364 18.364A9 9 0 005.636 5.636m12.728 12.728A9 9 0 015.636 5.636m12.728 12.728L5.636 5.636" /></svg>
+    return;
+  }
+
+  // 未连接
+  card.innerHTML = `
+    <div class="active-card" style="background: var(--bg-surface); border-color: var(--border-color); box-shadow: none;">
+      <div class="active-card-info">
+        <div class="stat-icon-wrapper" style="background: rgba(244, 63, 94, 0.1); border-color: rgba(244, 63, 94, 0.2); width: 48px; height: 48px; border-radius: 12px;">
+          <svg xmlns="http://www.w3.org/2000/svg" class="stat-icon" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2.5" style="color: var(--danger); width: 24px; height: 24px;"><path stroke-linecap="round" stroke-linejoin="round" d="M18.364 18.364A9 9 0 005.636 5.636m12.728 12.728A9 9 0 015.636 5.636m12.728 12.728L5.636 5.636" /></svg>
+        </div>
+        <div class="active-card-details">
+          <div class="active-card-title" style="color: var(--text-secondary);">
+            <span class="badge unavailable" style="padding: 2px 8px;">未连接</span> ${esc(titleLabel)} 当前未连接 VPN 节点
           </div>
-          <div class="active-card-details">
-            <div class="active-card-title" style="color: var(--text-secondary);">
-              <span class="badge unavailable" style="padding: 2px 8px;">未连接</span> 当前未连接 VPN 节点
-            </div>
-            <div class="active-card-meta" style="margin-top: 4px;">
-              在下方列表中选择一个可用备用节点并点击 “切换” 按钮开始连接。
-            </div>
+          <div class="active-card-meta" style="margin-top: 4px;">
+            ${esc(lastCheckMessage || '前往【出站代理】页选择一个可用节点并点击"切换"按钮开始连接。')}
           </div>
         </div>
       </div>
-    `;
-  }
+    </div>
+  `;
+}
+
+function render(){
+  const activeNodeId = state.active_openvpn_node_id;
+  const activeNode = nodes.find(n => n && (n.active || n.id === activeNodeId));
+
+  // 顶部活动节点卡：按"当前选中出口"动态渲染（默认/非默认共用同一卡片）
+  renderActiveNodeCardForEgress(selectedEgressSlotId || "__default__");
 
   // overview_rows 的渲染已由 renderEgressNodeList() 接管（按 selectedEgressSlotId 过滤），
   // 旧 renderOverviewNodes 仍然保留给节点管理页（page_nodes）使用，不在此处调用避免覆盖。
@@ -4976,7 +5037,13 @@ async function loadEgress() {
     ]);
     egressStatusList = statusResp.egress || [];
     egressRegions = regionsResp.regions || [];
+    // 主页默认自动选择默认出口（首次加载 / 清空选择后）
+    if (selectedEgressSlotId === null) {
+      const defaultEgress = egressStatusList.find(function(e) { return e.is_default; });
+      if (defaultEgress) selectedEgressSlotId = "__default__";
+    }
     renderEgressCards();
+    renderActiveNodeCardForEgress(selectedEgressSlotId || "__default__");
   } catch (e) { console.error(e); }
 }
 async function loadEgressStatus() { return loadEgress(); }
@@ -5057,6 +5124,8 @@ function renderEgressCards() {
 function selectEgress(slotKey) {
   selectedEgressSlotId = slotKey;
   renderEgressCards();
+  // 顶部活动节点卡同步切换到选中出口
+  renderActiveNodeCardForEgress(slotKey);
 }
 async function renderEgressNodeList() {
   const section = $("overview_node_section");
@@ -5202,13 +5271,12 @@ function switchPage(name) {
   var nav = document.getElementById("nav_" + name);
   if (nav) nav.classList.add("active");
   localStorage.setItem("vpngate_page", name);
-  // 出口卡片 + 节点列表（共用 DOM）只在主页 / 出站代理页显示，
-  // 节点管理页 / 设置 / 日志等页不显示。避免节点管理页和主页重复刷节点列表。
-  var sharedVisible = (name === "overview" || name === "egress");
+  // 出口卡片：主页 + 出站代理页都显示
   var sharedBlocks = document.getElementById("egress_status_blocks");
+  // 节点列表：仅出站代理页 + 已选出口时显示（主页移除节点列表，避免与出站代理页内容重复）
   var sharedSection = document.getElementById("overview_node_section");
-  if (sharedBlocks) sharedBlocks.style.display = sharedVisible ? "flex" : "none";
-  if (sharedSection) sharedSection.style.display = (sharedVisible && selectedEgressSlotId) ? "" : "none";
+  if (sharedBlocks) sharedBlocks.style.display = (name === "overview" || name === "egress") ? "flex" : "none";
+  if (sharedSection) sharedSection.style.display = (name === "egress" && selectedEgressSlotId) ? "" : "none";
   if (name === "egress") loadEgress();
   else if (name === "overview") loadEgressStatus();
 }
@@ -5848,6 +5916,14 @@ setInterval(async () => {
       updateCountryFilter();
       render();
     } catch(e) {}
+  }
+}, 10000);
+
+// 同样每 10 秒刷一次出口状态（含子出口健康/连接摘要），让顶部活动节点卡
+// 在用户未点击卡片时也能动态反映所选出口的真实状态。
+setInterval(async () => {
+  if (typeof state !== "undefined" && document.visibilityState === "visible" && typeof loadEgress === "function") {
+    try { await loadEgress(); } catch(e) {}
   }
 }, 10000);
 let gatewayPollInterval = null;

@@ -489,8 +489,9 @@ class TestEgressUnifiedUi(unittest.TestCase):
         fn = body[idx:end]
         self.assertIn("egress_status_blocks", fn, "switchPage 必须控制 egress_status_blocks 显隐")
         self.assertIn("overview_node_section", fn, "switchPage 必须控制 overview_node_section 显隐")
-        # 节点管理页不应显示共享容器
-        self.assertIn("sharedVisible", fn, "switchPage 必须按当前 page 决定 sharedVisible")
+        # 主页（overview）必须永久隐藏节点列表（避免与出站代理页内容重复）
+        self.assertIn('name === "overview"', fn, "switchPage 必须区分 overview 和 egress 决定节点列表显隐")
+        self.assertIn('name === "egress"', fn, "switchPage 必须区分 overview 和 egress 决定节点列表显隐")
 
     def test_page_egress_no_longer_uses_egress_list_id(self):
         """page_egress 不应再用 #egress_list（已外提为 #egress_status_blocks）。"""
@@ -510,6 +511,136 @@ class TestEgressUnifiedUi(unittest.TestCase):
         code_only = "\n".join(code_lines)
         self.assertNotIn(".json()", code_only,
                          "loadEgress 内不能再出现 .json()，fetchWithCsrf 已返回解析后数据")
+
+
+class TestHomeEgressActiveNodeCard(unittest.TestCase):
+    """验证：主页不显示节点列表、顶部活动节点卡按选中出口动态渲染、默认自动选中。"""
+
+    def _extract_function_body(self, code: str, func_signature: str) -> str:
+        """按大括号配对定位函数体边界，返回整段函数体（含签名）。"""
+        idx = code.find(func_signature)
+        if idx < 0:
+            return ""
+        # 找到签名后第一个 '{'
+        brace_start = code.find("{", idx)
+        if brace_start < 0:
+            return ""
+        depth = 0
+        i = brace_start
+        while i < len(code):
+            ch = code[i]
+            if ch == "{":
+                depth += 1
+            elif ch == "}":
+                depth -= 1
+                if depth == 0:
+                    return code[idx: i + 1]
+            i += 1
+        return code[idx:]
+
+    def test_res_initialized_in_collector_loop(self):
+        """子出口分支走到末尾 f-string 时 res 必须已定义，否则 UnboundLocalError
+        会被 set_state 翻译成 'check error: cannot access local variable \\'res\\''，
+        导致非默认出口的节点字段永远显示这个错误。"""
+        mgr_path = Path(__file__).resolve().parent.parent / "vpngate_manager.py"
+        body = mgr_path.read_text(encoding="utf-8")
+        idx = body.find("def collector_loop")
+        self.assertGreater(idx, 0)
+        end = body.find("\n\n", idx)
+        if end < 0:
+            end = idx + 3000
+        fn = body[idx:end]
+        # 抓取 try 块之前的赋值（初始化 res）
+        self.assertRegex(fn,
+                         r"res\s*=\s*[\"'].*子出口周期",
+                         "collector_loop 必须在 try 之前初始化 res，避免子出口分支 UnboundLocalError")
+
+    def test_render_active_node_card_for_egress_exists(self):
+        """必须存在 renderActiveNodeCardForEgress 函数（按选中出口渲染顶部活动卡）。"""
+        mgr_path = Path(__file__).resolve().parent.parent / "vpngate_manager.py"
+        body = mgr_path.read_text(encoding="utf-8")
+        self.assertIn("function renderActiveNodeCardForEgress",
+                      body, "必须存在 renderActiveNodeCardForEgress(slotKey) 函数")
+
+    def test_render_active_node_card_for_egress_uses_correct_data_source(self):
+        """renderActiveNodeCardForEgress 必须按 slotKey 从 state（默认）或 egressStatusList（子出口）拿数据。"""
+        mgr_path = Path(__file__).resolve().parent.parent / "vpngate_manager.py"
+        body = mgr_path.read_text(encoding="utf-8")
+        fn = self._extract_function_body(body, "function renderActiveNodeCardForEgress")
+        self.assertGreater(len(fn), 0)
+        # 应当读取 egressStatusList
+        self.assertIn("egressStatusList", fn,
+                      "renderActiveNodeCardForEgress 必须根据选中出口从 egressStatusList 取数据")
+        # 应当读取 state（默认出口的数据源）
+        self.assertIn("state", fn,
+                      "renderActiveNodeCardForEgress 必须从 state 取默认出口数据")
+        # 应当去共享节点池 nodes 查 active_node_id 的详情
+        self.assertIn("nodes", fn,
+                      "renderActiveNodeCardForEgress 必须从共享 nodes 池查活动节点详情")
+        # 应当区分默认/非默认出口
+        self.assertIn("__default__", fn,
+                      "renderActiveNodeCardForEgress 必须区分默认出口（__default__）")
+
+    def test_select_egress_refreshes_top_card(self):
+        """selectEgress(s) 必须同时刷新顶部活动节点卡，不能只刷卡片列表。"""
+        mgr_path = Path(__file__).resolve().parent.parent / "vpngate_manager.py"
+        body = mgr_path.read_text(encoding="utf-8")
+        fn = self._extract_function_body(body, "function selectEgress")
+        self.assertGreater(len(fn), 0)
+        self.assertIn("renderActiveNodeCardForEgress", fn,
+                      "selectEgress 必须调用 renderActiveNodeCardForEgress 同步刷新顶部卡片")
+
+    def test_load_egress_auto_selects_default_on_first_load(self):
+        """loadEgress 首次加载（selectedEgressSlotId === null）时必须自动选中默认出口。"""
+        mgr_path = Path(__file__).resolve().parent.parent / "vpngate_manager.py"
+        body = mgr_path.read_text(encoding="utf-8")
+        fn = self._extract_function_body(body, "async function loadEgress")
+        self.assertGreater(len(fn), 0)
+        self.assertIn("selectedEgressSlotId === null", fn,
+                      "loadEgress 必须判断 selectedEgressSlotId === null（首次加载）")
+        self.assertIn('is_default', fn,
+                      "loadEgress 必须通过 is_default 找默认出口")
+        self.assertIn('"__default__"', fn,
+                      "loadEgress 必须把默认出口的 slotKey 设为 __default__")
+
+    def test_load_egress_refreshes_top_card_after_loading(self):
+        """loadEgress 拉到状态后必须重新渲染顶部活动节点卡（让动态刷新生效）。"""
+        mgr_path = Path(__file__).resolve().parent.parent / "vpngate_manager.py"
+        body = mgr_path.read_text(encoding="utf-8")
+        fn = self._extract_function_body(body, "async function loadEgress")
+        self.assertGreater(len(fn), 0)
+        self.assertIn("renderActiveNodeCardForEgress", fn,
+                      "loadEgress 必须在拉到状态后调用 renderActiveNodeCardForEgress")
+
+    def test_switch_page_hides_node_list_on_home(self):
+        """主页（overview）必须永久隐藏节点列表，避免与出站代理页内容重复。"""
+        mgr_path = Path(__file__).resolve().parent.parent / "vpngate_manager.py"
+        body = mgr_path.read_text(encoding="utf-8")
+        idx = body.find("function switchPage")
+        self.assertGreater(idx, 0)
+        end = body.find("\nfunction ", idx + 30)
+        if end < 0:
+            end = idx + 3000
+        fn = body[idx:end]
+        # 节点列表在 overview 页必须强制隐藏
+        self.assertRegex(fn,
+                         r"sharedSection\.style\.display\s*=\s*\(\s*name\s*===\s*[\"']egress[\"']\s*&&\s*selectedEgressSlotId\s*\)\s*\?\s*[\"'][\"']\s*:\s*[\"']none[\"']",
+                         "switchPage 必须让 overview 页的 overview_node_section 永远隐藏")
+        # 出口卡片在 overview 和 egress 页都显示
+        self.assertIn('name === "overview" || name === "egress"', fn,
+                      "switchPage 必须让 egress_status_blocks 在 overview + egress 页都显示")
+
+    def test_render_calls_active_node_card_for_current_slot(self):
+        """render() 必须调用 renderActiveNodeCardForEgress(selectedEgressSlotId) 而非内联渲染。"""
+        mgr_path = Path(__file__).resolve().parent.parent / "vpngate_manager.py"
+        body = mgr_path.read_text(encoding="utf-8")
+        fn = self._extract_function_body(body, "function render()")
+        self.assertGreater(len(fn), 0)
+        self.assertIn("renderActiveNodeCardForEgress", fn,
+                      "render() 必须调用 renderActiveNodeCardForEgress")
+        # render() 不应再有内联的 activeCardContainer.innerHTML（已被函数抽出）
+        self.assertNotIn('activeCardContainer.innerHTML', fn,
+                         "render() 不应再有内联的 activeCardContainer 渲染（已抽到 renderActiveNodeCardForEgress）")
 
 
 if __name__ == "__main__":
