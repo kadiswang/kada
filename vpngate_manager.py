@@ -3629,7 +3629,7 @@ INDEX_HTML = r"""<!doctype html>
     <nav class="sidebar-nav">
       <a class="nav-item active" id="nav_overview" href="javascript:void(0)" onclick="switchPage('overview')">
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 9l9-7 9 7v11a2 2 0 01-2 2H5a2 2 0 01-2-2z"/></svg>
-        概览
+        主页
       </a>
       <a class="nav-item" id="nav_nodes" href="javascript:void(0)" onclick="switchPage('nodes')">
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M20 7l-8-4-8 4m16 0l-8 4m8-4v10l-8 4m0-10L4 7m8 4v10M4 7v10l8 4"/></svg>
@@ -4953,19 +4953,30 @@ function toggleSettingsSubmenu() {
 let egressRegions = [];
 let egressCurrent = null;
 async function loadEgress() {
-  // 默认先渲染默认出口卡片，确保即使 API 暂时不可用（如 CSRF 未就绪）
-  // 用户也能看到默认的 7928 出口；之后再用最新状态刷新列表。
+  // 性能优化：弹窗式刷新，先用本地缓存渲染，避免空白闪烁。后续并行拉两个端点：
+  //   1) /api/egress_status_all → 含路由/国家/IP类型/节点等详情（与主页共用同一数据源）
+  //   2) /api/egress_regions    → 用户添加/删除的入口（确保列表与配置一致）
   renderEgress();
   try {
-    const data = await fetchWithCsrf("./api/egress_regions");
-    egressRegions = data.regions || [];
+    const [statusResp, regionsResp] = await Promise.all([
+      fetchWithCsrf("./api/egress_status_all"),
+      fetchWithCsrf("./api/egress_regions")
+    ]);
+    egressStatusList = (statusResp.egress || []).filter(function(x) { return !x.is_default; });
+    egressRegions = regionsResp.regions || [];
     renderEgress();
   } catch (e) { console.error(e); }
 }
+let egressStatusList = [];
 function renderEgress() {
   const list = $("egress_list");
   if (!list) return;
-  if (!egressRegions.length) {
+  // 状态数据与 region 列表合并：状态数据提供 mode/country/ip/node，region 提供 slot_id/port
+  // 若 status 端没回（首屏未就绪），退化为只用 region。
+  const merged = (egressStatusList.length ? egressStatusList : (egressRegions || []).map(function(r){
+    return { slot_id: r.slot_id, name: r.slot_id, proxy_port: r.proxy_port, alive: !!r.alive, is_default: false };
+  }));
+  if (!merged.length) {
     list.innerHTML = "<div class='egress-empty'>当前没有自建出站代理。点击上方「添加出站代理」即可创建 7929、7930……</div>" +
       "<div class='egress-default-row'>" +
         "<span class='dot'></span>" +
@@ -4973,9 +4984,18 @@ function renderEgress() {
       "</div>";
     return;
   }
-  // 用与"已连接节点"同款 .active-card 横向大卡片渲染（信息密度对齐概览/节点管理）
-  const cards = egressRegions.map(function(r) {
-    const isDown = !r.alive;
+  // 与"主页/已连接节点"完全同款 .active-card 横向大卡片：48px 图标 + 状态徽标 + 端口徽标 + 模式/国家/类型/节点 + 右侧"删除"按钮
+  const cards = merged.map(function(e) {
+    const modeMap = {auto:"自动配置",fixed_ip:"固定IP",fixed_region:"固定地区",favorites:"收藏"};
+    const ipMap = {all:"所有IP",residential:"住宅IP",hosting:"机房IP"};
+    const mode = modeMap[e.routing_mode] || (e.routing_mode || "自动");
+    const ipType = ipMap[e.routing_ip_type] || (e.routing_ip_type || "所有IP");
+    const isDown = !e.alive;
+    const country = e.force_country ? translateCountry(e.force_country) : "自动";
+    const nodeInfo = e.active_node_id
+      ? (translateCountry("") + " 节点 " + e.active_node_id).trim()
+      : "未连接";
+    const port = e.proxy_port || 0;
     const statusBadge = isDown
       ? "<span class='badge' style='background: rgba(148,163,184,0.15); color: #64748b; border-color: rgba(148,163,184,0.3);'>未启动</span>"
       : "<span class='badge available'><span class='badge-pulse'></span>运行中</span>";
@@ -4984,7 +5004,7 @@ function renderEgress() {
     const iconColor = isDown ? "#94a3b8" : "var(--primary, #6366f1)";
     const iconPath = isDown
       ? "<path d='M18.364 18.364A9 9 0 005.636 5.636m12.728 12.728A9 9 0 015.636 5.636m12.728 12.728L5.636 5.636'/>"
-      : "<path d='M3 12h18M3 6h18M3 18h18'/>";
+      : "<path d='M13 10V3L4 14h7v7l9-11h-7z'/>";
     return "<div class='active-card'>" +
       "<div class='active-card-info'>" +
         "<div class='stat-icon-wrapper' style='background: " + iconBg + "; border-color: " + iconBorder + "; width: 48px; height: 48px; border-radius: 12px;'>" +
@@ -4993,17 +5013,19 @@ function renderEgress() {
         "<div class='active-card-details'>" +
           "<div class='active-card-title'>" +
             statusBadge +
-            "<strong>" + escAttr(r.slot_id) + "</strong>" +
-            "<span class='port-num' style='font-family: ui-monospace, \"SF Mono\", Menlo, monospace; font-size: 13px; color: var(--primary, #6366f1); background: rgba(99,102,241,0.08); padding: 2px 8px; border-radius: 6px;'>端口 " + r.proxy_port + "</span>" +
+            "<strong>" + escAttr(e.name || e.slot_id) + "</strong>" +
+            "<span class='port-num' style='font-family: ui-monospace, \"SF Mono\", Menlo, monospace; font-size: 13px; color: var(--primary, #6366f1); background: rgba(99,102,241,0.08); padding: 2px 8px; border-radius: 6px;'>端口 " + port + "</span>" +
           "</div>" +
           "<div class='active-card-meta' style='margin-top: 4px;'>" +
-            "<span>状态: <strong>" + (r.alive ? "已配置 · 运行中" : "已配置 · 未启动") + "</strong></span>" +
-            "<span style='margin-left: 12px;'>可在「代理设置」中选择本出口配置国家 / IP 类型 / 健康度</span>" +
+            "<span>模式: <strong>" + escAttr(mode) + "</strong></span>" +
+            "<span style='margin-left: 12px;'>国家: <strong>" + escAttr(country) + "</strong></span>" +
+            "<span style='margin-left: 12px;'>类型: <strong>" + escAttr(ipType) + "</strong></span>" +
+            "<span style='margin-left: 12px;'>节点: <strong>" + escAttr(nodeInfo) + "</strong></span>" +
           "</div>" +
         "</div>" +
       "</div>" +
       "<div>" +
-        "<button class='btn-danger' style='height:36px;padding:0 14px;border-radius:8px;display:inline-flex;align-items:center;gap:6px;' onclick=\"delEgress('" + escAttr(r.slot_id) + "')\">" +
+        "<button class='btn-danger' style='height:36px;padding:0 14px;border-radius:8px;display:inline-flex;align-items:center;gap:6px;' onclick=\"delEgress('" + escAttr(e.slot_id) + "')\">" +
           "<svg viewBox='0 0 24 24' fill='none' stroke='currentColor' stroke-width='2' style='width:14px;height:14px;'><path d='M3 6h18M8 6V4a2 2 0 012-2h4a2 2 0 012 2v2m3 0v14a2 2 0 01-2 2H7a2 2 0 01-2-2V6h14z'/></svg>" +
           "删除" +
         "</button>" +
@@ -5024,12 +5046,19 @@ async function addEgress() {
   egressRegions = data.regions || [];
   renderEgress();
   if (window.loadEgressStatus) loadEgressStatus();
+  // 重新拉一次状态详情，让新建的出口立刻显示 mode/country/IP 等真实配置
+  try {
+    const s = await fetchWithCsrf("./api/egress_status_all");
+    egressStatusList = (s.egress || []).filter(function(x) { return !x.is_default; });
+    renderEgress();
+  } catch (e) {}
 }
 async function delEgress(slotId) {
   if (!confirm("确定删除该出站代理？将停止其隧道并释放资源")) return;
   const data = await fetchWithCsrf("./api/egress_regions/delete", { method: "POST", body: JSON.stringify({ slot_id: slotId }) });
   if (!data.ok) { alert("删除失败：" + (data.error || "")); return; }
   egressRegions = data.regions || [];
+  egressStatusList = egressStatusList.filter(function(x) { return x.slot_id !== slotId; });
   renderEgress();
   if (window.loadEgressStatus) loadEgressStatus();
 }
@@ -5444,36 +5473,47 @@ async function openNetworkModal() {
   $("network_success").style.display = "none";
   $("network_form").reset();
 
-  // 1) 加载出口列表（默认 7928 + 各子出口）
+  // 性能优化：弹窗立即打开（不等数据返回），避免点击后无响应。所有数据加载放后台。
+  $("network_modal").style.display = "flex";
+
+  // 1) 加载国家列表（用全局缓存的 nodes，避免再请求 /api/nodes 拉 300+ 节点）。
+  // fetchWithCsrf 内部已经 await resp.json() 并直接返回解析后的数据，不要再 .json()。
+  const fc = $("net_force_country");
+  if (fc) {
+    const countries = [];
+    (nodes || []).forEach(function(n) { if (n.country && countries.indexOf(n.country) < 0) countries.push(n.country); });
+    fc.innerHTML = "<option value=''>不锁定（自动选最快）</option>" + countries.map(function(c) { return "<option value='" + c + "'>" + c + "</option>"; }).join("");
+  }
+
+  // 2) 出口列表：先展示已缓存的（若有），再后台刷新。重复打开弹窗可立即响应。
+  populateEgressDropdown();
+  if (netEgressList.length) {
+    if ($("net_egress") && !$("net_egress").value) $("net_egress").value = "__default__";
+    setNetEgress();
+  }
   try {
     const data = await fetchWithCsrf("./api/egress_status_all");
     netEgressList = (data.egress || []);
-  } catch (e) { netEgressList = []; }
+    populateEgressDropdown();
+    if (!$("net_egress").value) $("net_egress").value = "__default__";
+    setNetEgress();
+  } catch (e) { console.error(e); }
+}
+
+function populateEgressDropdown() {
   const sel = $("net_egress");
-  if (sel) {
-    sel.innerHTML = netEgressList.map(function(e) {
-      const label = e.is_default
-        ? "默认出口（" + (e.proxy_port || 7928) + "）"
-        : (e.name + "（端口 " + e.proxy_port + "）");
-      return "<option value='" + e.slot_id + "'>" + label + "</option>";
-    }).join("");
+  if (!sel) return;
+  if (!netEgressList.length) {
+    sel.innerHTML = "<option value='__default__'>默认出口（7928）</option>";
+    return;
   }
-
-  // 2) 加载国家列表（用于"锁定国家地区"下拉）
-  try {
-    const nresp = await fetchWithCsrf("./api/nodes");
-    const ndata = await nresp.json();
-    const countries = [];
-    (ndata.nodes || []).forEach(function(n) { if (n.country && countries.indexOf(n.country) < 0) countries.push(n.country); });
-    const fc = $("net_force_country");
-    if (fc) fc.innerHTML = "<option value=''>不锁定（自动选最快）</option>" + countries.map(function(c) { return "<option value='" + c + "'>" + c + "</option>"; }).join("");
-  } catch (e) {}
-
-  // 3) 默认选中默认出口，并按所选出口填充下方字段
-  if (sel) sel.value = "__default__";
-  setNetEgress();
-
-  $("network_modal").style.display = "flex";
+  sel.innerHTML = netEgressList.map(function(e) {
+    const label = e.is_default
+      ? "默认出口（" + (e.proxy_port || 7928) + "）"
+      : (e.name + "（端口 " + e.proxy_port + "）");
+    return "<option value='" + e.slot_id + "'>" + label + "</option>";
+  }).join("");
+  if (!sel.value) sel.value = "__default__";
 }
 
 function setNetEgress() {

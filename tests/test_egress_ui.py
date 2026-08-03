@@ -252,5 +252,120 @@ def EGRESS_ORCH_for_test(slot_id):
     return None
 
 
+class TestEgressPageStyleAndModal(unittest.TestCase):
+    """本次需求：出站代理页样式对齐主页 + 代理设置弹窗打开速度优化。"""
+
+    @staticmethod
+    def _extract_function_body(body: str, start_marker: str) -> str:
+        """提取以 start_marker 开头、到下一个 \nfunction / \nasync function 之间的函数体。"""
+        idx = body.find(start_marker)
+        if idx < 0:
+            return ""
+        # 跳过函数签名到第一个 {
+        brace = body.find("{", idx)
+        if brace < 0:
+            return ""
+        # 配对大括号找到函数体结束
+        depth = 0
+        i = brace
+        while i < len(body):
+            ch = body[i]
+            if ch == "{":
+                depth += 1
+            elif ch == "}":
+                depth -= 1
+                if depth == 0:
+                    return body[idx:i + 1]
+            i += 1
+        return body[idx:]
+
+    def test_open_network_modal_uses_cached_nodes_for_country_list(self):
+        """代理设置弹窗加载国家列表时，必须用全局缓存的 nodes，不能再单独请求 /api/nodes。
+        否则 300+ 节点的列表会阻塞弹窗打开（性能回归保护）。"""
+        mgr_path = Path(__file__).resolve().parent.parent / "vpngate_manager.py"
+        body = mgr_path.read_text(encoding="utf-8")
+        fn_body = self._extract_function_body(body, "async function openNetworkModal")
+        self.assertTrue(fn_body, "openNetworkModal 函数必须存在")
+        # 必须没有再调用 /api/nodes（避免重复拉 300+ 节点）
+        self.assertNotIn('fetchWithCsrf("./api/nodes")', fn_body,
+                         "openNetworkModal 不能再请求 /api/nodes，会拖慢弹窗打开")
+        # 必须有使用全局 nodes 缓存
+        self.assertIn("nodes || []", fn_body,
+                      "openNetworkModal 必须用全局 nodes 缓存来填充国家下拉")
+
+    def test_open_network_modal_does_not_double_json(self):
+        """openNetworkModal 不能对 fetchWithCsrf 的结果再 .json()，否则会 TypeError 被吞导致国家下拉永远空。"""
+        mgr_path = Path(__file__).resolve().parent.parent / "vpngate_manager.py"
+        body = mgr_path.read_text(encoding="utf-8")
+        fn_body = self._extract_function_body(body, "async function openNetworkModal")
+        self.assertTrue(fn_body, "openNetworkModal 函数必须存在")
+        # 去掉注释行（// 开头），再检查实际代码中是否调用了 .json()
+        import re
+        code_lines = [ln for ln in fn_body.splitlines() if not ln.strip().startswith("//")]
+        code_only = "\n".join(code_lines)
+        self.assertNotIn(".json()", code_only,
+                         "openNetworkModal 内不能再出现 .json()，fetchWithCsrf 已返回解析后数据")
+
+    def test_open_network_modal_shows_immediately(self):
+        """openNetworkModal 必须先 display=flex 再 await 数据，不能阻塞 UI 响应。"""
+        mgr_path = Path(__file__).resolve().parent.parent / "vpngate_manager.py"
+        body = mgr_path.read_text(encoding="utf-8")
+        fn_body = self._extract_function_body(body, "async function openNetworkModal")
+        self.assertTrue(fn_body)
+        # display=flex 必须在第一个 await 之前
+        display_pos = fn_body.find('network_modal").style.display = "flex"')
+        await_pos = fn_body.find("await ")
+        self.assertGreater(display_pos, 0, "必须有 network_modal 的 display 切换")
+        self.assertGreater(await_pos, 0)
+        self.assertLess(display_pos, await_pos,
+                        "弹窗必须先 display=flex 再 await 数据，否则点击会有延迟")
+
+    def test_load_egress_fetches_status_for_mode_country_info(self):
+        """loadEgress 必须并行请求 /api/egress_status_all，否则卡片无法展示 mode/country/IP/node 真实配置。"""
+        mgr_path = Path(__file__).resolve().parent.parent / "vpngate_manager.py"
+        body = mgr_path.read_text(encoding="utf-8")
+        fn_body = self._extract_function_body(body, "async function loadEgress")
+        self.assertTrue(fn_body, "loadEgress 函数必须存在")
+        # 必须并行请求两个端点
+        self.assertIn("./api/egress_status_all", fn_body,
+                      "loadEgress 必须请求 /api/egress_status_all 以拿到 mode/country 等真实配置")
+        self.assertIn("./api/egress_regions", fn_body,
+                      "loadEgress 必须请求 /api/egress_regions 以拿到添加/删除入口")
+        # 必须过滤掉默认出口
+        self.assertIn("is_default", fn_body,
+                      "loadEgress 必须过滤掉默认出口（is_default）")
+
+    def test_render_egress_uses_active_card_style(self):
+        """renderEgress 必须用与主页完全同款 .active-card 样式，包含 mode/country/ip/node 字段。"""
+        mgr_path = Path(__file__).resolve().parent.parent / "vpngate_manager.py"
+        body = mgr_path.read_text(encoding="utf-8")
+        fn_body = self._extract_function_body(body, "function renderEgress")
+        self.assertTrue(fn_body, "renderEgress 函数必须存在")
+        # 必须用 .active-card
+        self.assertIn("active-card", fn_body)
+        # 必须有 48px 图标块
+        self.assertIn("width: 48px", fn_body)
+        # 必须显示 模式/国家/类型/节点 四个真实配置字段
+        for field in ["模式:", "国家:", "类型:", "节点:"]:
+            self.assertIn(field, fn_body,
+                          f"renderEgress 必须显示 {field} 字段（与主页同款信息密度）")
+        # 右侧必须有删除按钮
+        self.assertIn("btn-danger", fn_body)
+        self.assertIn("delEgress", fn_body)
+
+    def test_overview_label_renamed_to_home(self):
+        """侧边栏"概览"已改为"主页"，作为默认着陆页。"""
+        mgr_path = Path(__file__).resolve().parent.parent / "vpngate_manager.py"
+        body = mgr_path.read_text(encoding="utf-8")
+        # 侧边栏 nav_overview 的标签必须改为"主页"
+        idx = body.find('id="nav_overview"')
+        self.assertGreater(idx, 0, "侧边栏必须有 nav_overview 项")
+        snippet = body[idx:idx + 800]
+        self.assertIn("主页", snippet, "侧边栏 nav_overview 的标签必须是'主页'")
+        # 页面默认初始化：localStorage 默认值仍为 overview（page_overview），即主页
+        self.assertIn('localStorage.getItem("vpngate_page") || "overview"',
+                      body, "默认着陆页必须保持 overview（即视觉上的'主页'）")
+
+
 if __name__ == "__main__":
     unittest.main()
