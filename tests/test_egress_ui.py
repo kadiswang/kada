@@ -1,5 +1,6 @@
-"""针对「出站代理 = 数量管理 + 代理设置按出口」改动的回归测试。"""
+"""针对「出站管理 = 数量管理 + 代理设置按出口」改动的回归测试。"""
 import json
+import re
 import tempfile
 import unittest
 from pathlib import Path
@@ -350,9 +351,11 @@ class TestEgressPageStyleAndModal(unittest.TestCase):
         for field in ["模式:", "国家:", "类型:", "节点:"]:
             self.assertIn(field, fn_body,
                           f"renderEgressCards 必须显示 {field} 字段（与主页同款信息密度）")
-        # 右侧必须有断开/删除按钮
+        # 右侧必须有断开按钮（删除按钮已统一收到出站管理页 admin table，避免与"断开"功能重复造成误操作）
         self.assertIn("btn-danger", fn_body)
-        self.assertIn("delEgress", fn_body)
+        self.assertIn("disconnectEgress", fn_body, "卡片必须有断开按钮调用 disconnectEgress")
+        # 卡片不应该再有 delEgress 删除按钮——重复且容易误触
+        self.assertNotIn("delEgress", fn_body, "卡片上的删除按钮已迁移到出站管理页实例列表，避免与断开按钮重复造成误操作")
         # 必须支持选中态
         self.assertIn("selectedEgressSlotId", fn_body,
                       "renderEgressCards 必须支持选中态（selectedEgressSlotId）")
@@ -641,6 +644,153 @@ class TestHomeEgressActiveNodeCard(unittest.TestCase):
         # render() 不应再有内联的 activeCardContainer.innerHTML（已被函数抽出）
         self.assertNotIn('activeCardContainer.innerHTML', fn,
                          "render() 不应再有内联的 activeCardContainer 渲染（已抽到 renderActiveNodeCardForEgress）")
+
+
+class TestEgressRenameAndAdminTable(unittest.TestCase):
+    """本轮需求：
+    1. "出站代理"统一更名为"出站管理"
+    2. 主页彻底不显示节点列表（避免与出站管理页重复）
+    3. 出站管理页新增实例列表（统一删除入口）
+    """
+
+    def _body(self):
+        mgr = Path(__file__).resolve().parent.parent / "vpngate_manager.py"
+        return mgr.read_text(encoding="utf-8")
+
+    def test_outbound_module_renamed_to_management(self):
+        """全部"出站代理"已改名为"出站管理"（菜单/页面/按钮/错误消息/注释一致）。"""
+        body = self._body()
+        # 用户可见文案必须改：菜单 + h2 + 按钮 + 提示
+        self.assertIn(">出站管理<", body, "nav_egress 必须显示'出站管理'")
+        self.assertIn(">出站管理</h2>", body, "page_egress h2 必须是'出站管理'")
+        self.assertIn("添加出站管理", body, "'添加出站管理'按钮必须存在")
+        # 错误消息必须改
+        self.assertNotIn("出站代理不存在", body, "错误消息必须改用'出站管理'")
+        # 用户可见文案不能残留旧名
+        self.assertNotIn("出站代理", body, "所有用户可见'出站代理'已替换为'出站管理'")
+        # API / HTML id / 内部变量名保留（这些是底层约定，不影响用户文案一致性）
+        self.assertIn("/api/egress_", body, "API 路径前缀保留（/api/egress_*）")
+
+    def test_render_egress_node_list_hides_on_home_page(self):
+        """renderEgressNodeList 必须检查当前页面：仅在 page_egress 显示时展示；主页永远隐藏。"""
+        body = self._body()
+        fn = body  # 函数可能跨多行
+        # 必须显式判断 page_egress 是否可见
+        self.assertIn('document.getElementById("page_egress")', fn,
+                      "renderEgressNodeList 必须检查当前 page_egress 是否可见")
+        # 必须组合：inEgressPage && selectedEgressSlotId 才展示
+        idx = body.find("async function renderEgressNodeList")
+        self.assertGreater(idx, 0)
+        end = body.find("async function ", idx + 30)
+        if end < 0:
+            end = idx + 3000
+        fn_body = body[idx:end]
+        # inEgressPage + selectedEgressSlotId 同时成立才显示
+        self.assertIn("inEgressPage", fn_body, "renderEgressNodeList 必须计算 inEgressPage 变量")
+        self.assertIn("selectedEgressSlotId", fn_body, "renderEgressNodeList 必须检查 selectedEgressSlotId")
+        # 主页(overview)永远隐藏
+        self.assertIn("page_egress", fn_body)
+
+    def test_render_egress_admin_table_renders_rows(self):
+        """renderEgressAdminTable 必须存在并能从 egressRegions 渲染行 + 调用 delEgress。"""
+        body = self._body()
+        idx = body.find("function renderEgressAdminTable")
+        self.assertGreater(idx, 0, "renderEgressAdminTable 函数必须存在")
+        end = body.find("\nfunction ", idx + 40)
+        if end < 0:
+            end = idx + 3000
+        fn_body = body[idx:end]
+        # 必须使用 egressRegions + egressStatusList（合并数据源）
+        self.assertIn("egressRegions", fn_body, "renderEgressAdminTable 必须用 egressRegions 数据源")
+        self.assertIn("egressStatusList", fn_body, "renderEgressAdminTable 必须用 egressStatusList 数据源")
+        # 必须渲染出 delEgress 调用（统一删除入口）
+        self.assertIn("delEgress", fn_body, "renderEgressAdminTable 必须提供删除入口(delEgress)")
+        # 必须排除默认出口
+        self.assertIn("__default__", fn_body, "renderEgressAdminTable 应排除默认出口")
+
+    def test_page_egress_has_admin_table_dom(self):
+        """page_egress HTML 必须包含 egress_admin_rows 容器（admin table 的 tbody 入口）。"""
+        body = self._body()
+        self.assertIn('id="egress_admin_rows"', body,
+                      "page_egress 必须包含 egress_admin_rows 容器，供 renderEgressAdminTable 注入")
+        self.assertIn('id="egress_admin_summary"', body,
+                      "page_egress 必须包含 egress_admin_summary 显示实例统计")
+        # 页面必须有"已配置的出站管理实例"标题
+        self.assertIn("已配置的出站管理实例", body,
+                      "page_egress 必须标注出实例列表区域")
+
+    def test_load_egress_renders_admin_table(self):
+        """loadEgress 完成时必须调 renderEgressAdminTable，确保实例列表实时刷新。"""
+        body = self._body()
+        idx = body.find("async function loadEgress")
+        self.assertGreater(idx, 0)
+        end = body.find("async function ", idx + 30)
+        if end < 0:
+            end = idx + 3000
+        fn_body = body[idx:end]
+        self.assertIn("renderEgressAdminTable", fn_body, "loadEgress 必须调 renderEgressAdminTable")
+
+
+class TestEgressStuckRecovery(unittest.TestCase):
+    """本轮修复：非默认出口卡死'当前已有连接或节点检测任务正在进行，请稍后再试' 的根因。
+
+    根因 1: connect_node 的 finally 只释放 in-memory is_connecting，
+            未持久化 set_state(is_connecting=False)，STATE_FILE 失同步。
+    根因 2: maintain_shared_egress 头部 `if is_connecting: return` 不会自愈
+            历史脏状态（is_connecting 卡 True 但实际进程不存在）。
+    """
+
+    def _body(self):
+        mgr = Path(__file__).resolve().parent.parent / "vpngate_manager.py"
+        return mgr.read_text(encoding="utf-8")
+
+    def test_connect_node_finally_persists_state(self):
+        """connect_node 的 finally 必须显式 set_state(is_connecting=False)，
+        保证 STATE_FILE 与 in-memory 同步，前端 status 不再'永远卡死'。"""
+        body = self._body()
+        idx = body.find("def connect_node")
+        self.assertGreater(idx, 0)
+        end = body.find("\ndef ", idx + 20)
+        if end < 0:
+            end = idx + 5000
+        fn_body = body[idx:end]
+        # finally 块必须出现
+        self.assertIn("finally:", fn_body, "connect_node 必须有 finally 块")
+        # finally 内必须有 set_state(is_connecting=False) 兜底
+        self.assertRegex(fn_body, r"finally:[\s\S]*?set_state\(is_connecting\s*=\s*False\)",
+                         "connect_node finally 内必须 set_state(is_connecting=False) 兜底")
+
+    def test_maintain_shared_egress_self_heals_stuck_state(self):
+        """maintain_shared_egress 头部必须先检查 active_openvpn_running()，
+        脏状态(is_connecting=True 但进程已死) 自愈重置，避免'永远卡死'。"""
+        body = self._body()
+        idx = body.find("def maintain_shared_egress")
+        self.assertGreater(idx, 0)
+        end = body.find("\ndef ", idx + 30)
+        if end < 0:
+            end = idx + 3000
+        fn_body = body[idx:end]
+        # 必须检查 active_openvpn_running 来判断是否真正在跑
+        self.assertIn("active_openvpn_running", fn_body,
+                      "maintain_shared_egress 必须用 active_openvpn_running 判断真实连接状态")
+        # 必须有 set_state(is_connecting=False) 自愈分支
+        self.assertRegex(fn_body,
+                         r"if\s+is_connecting[\s\S]*?set_state\(is_connecting\s*=\s*False[,\)]",
+                         "maintain_shared_egress 必须有 is_connecting 卡死时 set_state(False) 自愈")
+
+    def test_collector_loop_initializes_res_for_child(self):
+        """collector_loop 在 try 之前必须初始化 res，防止子出口分支触发 UnboundLocalError。"""
+        body = self._body()
+        idx = body.find("def collector_loop")
+        self.assertGreater(idx, 0)
+        end = body.find("\ndef ", idx + 20)
+        if end < 0:
+            end = idx + 3000
+        fn_body = body[idx:end]
+        # 必须在 try 前对 res 赋值
+        m = re.search(r"res\s*=\s*[\"']子出口周期", fn_body)
+        self.assertIsNotNone(m,
+                             "collector_loop 必须在 try 之前初始化 res='子出口周期...' 防止 UnboundLocalError")
 
 
 if __name__ == "__main__":
