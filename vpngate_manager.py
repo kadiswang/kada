@@ -3720,11 +3720,21 @@ INDEX_HTML = r"""<!doctype html>
 <div class="content-body">
 
     <div id="page_overview" class="page-content">
+    <!-- 主页：当前连接状态卡 -->
     <section class="active-node-section" id="home_active_node_card" style="margin-bottom: 24px;">
       <!-- 主页专用：按主页选中出口渲染当前活动节点卡。 -->
     </section>
-    <!-- 主页专用出口卡片：只读展示，不提供删除/添加入口，不联动节点列表。 -->
-    <div id="home_egress_blocks" style="display:flex;flex-direction:column;gap:12px;margin: 0 0 24px 0;"></div>
+    <!-- 主页：出口实例概览（紧凑模式，点击可切换查看详情，不含路由配置和操作按钮） -->
+    <section id="home_egress_module" style="background: var(--bg-surface, #f8fafc); border: 1px solid var(--border-color, #e2e8f0); border-radius: 12px; padding: 16px 20px; margin-bottom: 24px;">
+      <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:12px;">
+        <div style="display:flex;align-items:center;gap:8px;">
+          <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2" style="width:16px;height:16px;color:var(--text-muted);"><path stroke-linecap="round" stroke-linejoin="round" d="M13 10V3L4 14h7v7l9-11h-7z"/></svg>
+          <strong style="font-size:14px;color:var(--text-primary);">出口实例</strong>
+        </div>
+        <span id="home_egress_count" style="font-size:12px;color:var(--text-muted);"></span>
+      </div>
+      <div id="home_egress_blocks" style="display:flex;flex-direction:column;gap:8px;"></div>
+    </section>
     </div>
 
     <!--
@@ -5235,13 +5245,68 @@ function _sortEgressForDisplay(list) {
   return def ? [def].concat(rest) : rest;
 }
 
-// ---- 主页卡片渲染（写 home_egress_blocks，只读 + 断开，不提供删除/添加/节点列表） ----
+// ---- 主页出口概览（紧凑状态条，只展示名称+状态+端口，不含路由详情和操作按钮） ----
+function _buildHomeEgressSummaryHTML(e) {
+  const isDefault = !!e.is_default;
+  const isDown = !e.alive;
+  const titleLabel = isDefault ? "默认出口" : (e.name || e.slot_id);
+  const port = e.proxy_port || 7928;
+  const slotKey = isDefault ? "__default__" : e.slot_id;
+  const isSelected = homeSelectedEgressSlotId === slotKey;
+  // 状态徽标
+  let statusBadge;
+  if (isDown) {
+    statusBadge = "<span style='font-size:11px;color:#94a3b8;background:rgba(148,163,184,0.12);padding:1px 8px;border-radius:10px;border:1px solid rgba(148,163,184,0.2);'>未启动</span>";
+  } else if (e.active_node_id) {
+    statusBadge = "<span style='font-size:11px;color:#059669;background:rgba(5,150,105,0.10);padding:1px 8px;border-radius:10px;border:1px solid rgba(5,150,105,0.2);'>已连接</span>";
+  } else if (e.is_connecting) {
+    statusBadge = "<span style='font-size:11px;color:#d97706;background:rgba(217,119,6,0.10);padding:1px 8px;border-radius:10px;border:1px solid rgba(217,119,6,0.2);'>连接中</span>";
+  } else {
+    statusBadge = "<span style='font-size:11px;color:#059669;background:rgba(5,150,105,0.10);padding:1px 8px;border-radius:10px;border:1px solid rgba(5,150,105,0.2);'>运行中</span>";
+  }
+  // 节点信息（单行简述）
+  const nodeBrief = e.active_node_id
+    ? ("<span style='color:var(--text-muted);font-size:12px;font-family:ui-monospace,\"SF Mono\",Menlo,monospace;'>" + escAttr(e.active_node_id) + "</span>")
+    : (e.last_check_message
+      ? "<span style='color:var(--text-muted);font-size:12px;'>" + escAttr(e.last_check_message) + "</span>"
+      : "<span style='color:var(--text-muted);font-size:12px;'>未连接</span>");
+  const selectedBg = isSelected ? "background: rgba(99,102,241,0.06); border-color: rgba(99,102,241,0.25);" : "";
+  return "<div style='display:flex;align-items:center;gap:12px;padding:10px 14px;border-radius:10px;border:1px solid var(--border-color,#e2e8f0);background:var(--bg-surface,#f8fafc);cursor:pointer;transition:all 0.15s;" + selectedBg + "' onclick=\"selectHomeEgressCard('" + escAttr(slotKey) + "')\">" +
+    // 左侧图标
+    "<div style='width:32px;height:32px;border-radius:8px;display:flex;align-items:center;justify-content:center;flex-shrink:0;" +
+      (isDown ? "background:rgba(148,163,184,0.12);" : (isDefault ? "background:rgba(16,185,129,0.12);" : "background:rgba(99,102,241,0.12);")) + ">" +
+      "<svg xmlns='http://www.w3.org/2000/svg' fill='none' viewBox='0 0 24 24' stroke='currentColor' stroke-width='2.5' style='width:16px;height:16px;" +
+        (isDown ? "color:#94a3b8" : (isDefault ? "color:#10b981" : "color:var(--primary,#6366f1)")) + "'>" +
+      (isDown
+        ? "<path d='M18.364 18.364A9 9 0 005.636 5.636m12.728 12.728A9 9 0 015.636 5.636m12.728 12.728L5.636 5.636'/>"
+        : "<path d='M13 10V3L4 14h7v7l9-11h-7z'/>") +
+      "</svg></div>" +
+    // 中间信息区
+    "<div style='flex:1;min-width:0;'>" +
+      "<div style='display:flex;align-items:center;gap:8px;'>" +
+        statusBadge +
+        "<strong style='font-size:13px;color:var(--text-primary);'>" + escAttr(titleLabel) + "</strong>" +
+        (isSelected ? "<span style='font-size:10px;color:var(--primary,#6366f1);background:rgba(99,102,241,0.10);padding:1px 6px;border-radius:6px;'>已选中</span>" : "") +
+      "</div>" +
+      "<div style='margin-top:3px;display:flex;align-items:center;gap:8px;'>" +
+        nodeBrief +
+        "<span style='color:var(--text-muted);font-size:11px;'>:" + port + "</span>" +
+      "</div>" +
+    "</div>" +
+    // 右侧箭头
+    "<svg xmlns='http://www.w3.org/2000/svg' fill='none' viewBox='0 0 24 24' stroke='currentColor' stroke-width='2' style='width:14px;height:14px;color:var(--text-muted);flex-shrink:0;'><path stroke-linecap='round' stroke-linejoin='round' d='M9 5l7 7-7 7'/></svg>" +
+  "</div>";
+}
+
+// ---- 主页卡片渲染（写 home_egress_blocks，紧凑概览模式） ----
 function renderHomeEgressCards() {
   const box = $("home_egress_blocks");
+  const countLabel = $("home_egress_count");
   if (!box) return;
   const list = _sortEgressForDisplay(homeEgressStatusList || []);
+  if (countLabel) countLabel.textContent = list.length > 0 ? "共 " + list.length + " 个" : "";
   if (!list.length) { box.innerHTML = ""; return; }
-  box.innerHTML = list.map(function(e) { return _buildEgressCardHTML(e, "home"); }).join("");
+  box.innerHTML = list.map(function(e) { return _buildHomeEgressSummaryHTML(e); }).join("");
 }
 
 // ---- 出站管理卡片渲染（写 egress_status_blocks，含断开 + 删除 + 节点列表） ----
