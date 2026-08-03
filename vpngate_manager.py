@@ -4175,6 +4175,88 @@ INDEX_HTML = r"""<!doctype html>
       </div>
     </div>
   </div>
+  <div id="page_egress" class="page-content" style="display:none;">
+    <!-- 添加出站管理弹窗：让用户给新实例起名（备注/用途）+ 选端口（留空自动顺延） -->
+    <div id="add_egress_modal" style="display:none; position:fixed; inset:0; background:rgba(15,23,42,0.45); z-index:1000; align-items:center; justify-content:center;">
+      <div style="background:var(--bg-card,#fff); border:1px solid var(--border-color,#e2e8f0); border-radius:12px; padding:24px; width:min(420px, 90vw); box-shadow:0 20px 50px rgba(15,23,42,0.25);">
+        <h3 style="margin:0 0 4px; font-size:18px; font-weight:600; color:var(--text-primary,#0f172a);">添加出站管理实例</h3>
+        <p style="margin:0 0 16px; font-size:12px; color:var(--text-secondary,#64748b); line-height:1.6;">为新实例起个名字（留空自动生成）。端口默认自动顺延（7929 起），如有冲突可手动指定空闲端口。</p>
+        <label style="display:block; font-size:12px; color:var(--text-secondary,#64748b); margin-bottom:6px;">实例名称 <span style="color:var(--text-muted,#94a3b8);">（可选）</span></label>
+        <input id="add_egress_name" type="text" maxlength="40" placeholder="例如：东京-住宅IP" style="width:100%; box-sizing:border-box; height:36px; padding:0 12px; border-radius:8px; border:1px solid var(--border-color,#cbd5e1); background:var(--bg-surface,#f8fafc); color:var(--text-primary,#0f172a); font-size:13px; outline:none;" />
+        <label style="display:block; font-size:12px; color:var(--text-secondary,#64748b); margin:14px 0 6px;">本地监听端口 <span style="color:var(--text-muted,#94a3b8);">（留空自动顺延）</span></label>
+        <input id="add_egress_port" type="number" min="1024" max="65535" placeholder="7929 / 7930 / ..." style="width:100%; box-sizing:border-box; height:36px; padding:0 12px; border-radius:8px; border:1px solid var(--border-color,#cbd5e1); background:var(--bg-surface,#f8fafc); color:var(--text-primary,#0f172a); font-size:13px; outline:none;" />
+        <label style="display:block; font-size:12px; color:var(--text-secondary,#64748b); margin:14px 0 6px;">锁定国家/地区 <span style="color:var(--text-muted,#94a3b8);">（可选，留空则自动选最快）</span></label>
+        <select id="add_egress_country" style="width:100%; box-sizing:border-box; height:36px; padding:0 12px; border-radius:8px; border:1px solid var(--border-color,#cbd5e1); background:var(--bg-surface,#f8fafc); color:var(--text-primary,#0f172a); font-size:13px; outline:none; cursor:pointer;">
+          <option value="">不锁定（自动选最快）</option>
+        </select>
+        <div id="add_egress_error" style="display:none; margin-top:10px; padding:8px 10px; font-size:12px; color:#dc2626; background:rgba(220,38,38,0.08); border:1px solid rgba(220,38,38,0.20); border-radius:6px;"></div>
+        <div style="display:flex; justify-content:flex-end; gap:8px; margin-top:18px;">
+          <button class="btn-ghost" onclick="closeAddEgressModal()" style="height:36px; padding:0 14px; border-radius:8px;">取消</button>
+          <button class="btn-primary" id="add_egress_submit_btn" onclick="submitAddEgress()" style="height:36px; padding:0 16px; border-radius:8px; font-weight:600;">添加</button>
+        </div>
+      </div>
+    </div>
+    <section class="toolbar" style="flex-direction:column; align-items:stretch; gap:14px;">
+      <div style="display:flex;align-items:center;justify-content:space-between;gap:12px;flex-wrap:wrap;">
+        <div>
+          <h2 style="margin:0 0 4px;font-size:20px;font-weight:600;">出站管理</h2>
+          <p style="color:var(--text-muted);margin:0;font-size:13px;line-height:1.6;">这里只决定要几个出站管理实例，每个实例是一套独立的 <strong style="color:var(--text);">HTTP/SOCKS5 代理端口</strong>。端口自动顺延（默认 7928，新增从 7929 起）。所有出站管理<strong style="color:var(--text);">共用同一份节点池</strong>（只拉取一次，不重复抓）。</p>
+        </div>
+        <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center;">
+          <button class="btn-primary" onclick="openAddEgressModal()" style="height:36px;padding:0 14px;border-radius:8px;font-weight:600;display:inline-flex;align-items:center;gap:6px;">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" style="width:14px;height:14px;"><path d="M12 5v14M5 12h14"/></svg>
+            添加出站管理
+          </button>
+          <button class="btn-ghost" id="btn_refresh_egress" onclick="loadEgressWithFeedback()" style="height:36px;padding:0 14px;border-radius:8px;display:inline-flex;align-items:center;gap:6px;">
+            <svg id="refresh_egress_icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="width:14px;height:14px;"><path d="M23 4v6h-6M1 20v-6h6M3.51 9a9 9 0 0114.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0020.49 15"/></svg>
+            <span id="refresh_egress_text">刷新状态</span>
+          </button>
+        </div>
+      </div>
+      <div id="page_egress_hint" style="color: var(--text-muted); font-size: 12px; text-align: right;">点击下方任一卡片查看其可用节点列表；点击卡片右侧"删除"按钮可移除该出站管理实例。新添加的实例会出现在列表顶部。</div>
+    </section>
+    <!-- 出站管理专用：顶部活动节点卡（按出站管理页选中出口渲染，与主页独立） -->
+    <section class="active-node-section" id="egress_active_node_card" style="margin-bottom: 24px;"></section>
+    <!-- 出站模块：出口实例卡片区（与主页"出口实例"模块视觉完全一致：铺满 + 扁平标题 + 8px 间距） -->
+    <div id="egress_module_card" style="background: var(--bg-surface, #f8fafc); border: 1px solid var(--border-color, #e2e8f0); border-radius: 12px; padding: 16px 20px; margin-bottom: 24px; box-shadow: var(--shadow-sm);">
+      <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:12px;">
+        <div style="display:flex;align-items:center;gap:8px;">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="width:16px;height:16px;color:var(--text-muted);"><path stroke-linecap="round" stroke-linejoin="round" d="M13 10V3L4 14h7v7l9-11h-7z"/></svg>
+          <strong style="font-size:14px;color:var(--text-primary);">出口实例</strong>
+        </div>
+        <span id="egress_card_count_label" style="font-size:12px;color:var(--text-muted);"></span>
+      </div>
+      <div id="egress_status_blocks" style="display:flex;flex-direction:column;gap:8px;"></div>
+      <div id="egress_empty_hint" style="display:none;padding:16px 0;text-align:center;color:var(--text-muted);font-size:13px;">
+        暂无出口实例。<br><span style="font-size:12px;color:var(--text-secondary);">点击上方「添加出站管理」创建第一个实例。</span>
+      </div>
+    </div>
+    <!-- 出站管理专用：节点列表区（按选中出口过滤共享节点池，仅在该页内显示） -->
+    <div id="egress_node_section" style="display:none; margin-bottom: 24px;">
+      <div style="display: flex; align-items: center; justify-content: space-between; margin-bottom: 16px; flex-wrap: wrap; gap: 8px;">
+        <span style="font-size: 15px; font-weight: 600; color: var(--text-primary);">节点列表</span>
+        <span id="egress_filter_label" style="font-size: 12px; color: var(--text-secondary);"></span>
+      </div>
+      <div class="table-wrapper" style="margin-top: 0;">
+        <div class="table-container">
+          <table>
+            <thead>
+              <tr>
+                <th style="width: 90px;">状态</th>
+                <th style="width: 160px;">IP 地址 : 端口</th>
+                <th>物理位置</th>
+                <th style="width: 80px;">IP 类型</th>
+                <th style="width: 80px;">延迟</th>
+                <th style="width: 80px;">健康度</th>
+                <th style="width: 160px;">操作</th>
+              </tr>
+            </thead>
+            <tbody id="egress_rows"></tbody>
+          </table>
+        </div>
+      </div>
+    </div>
+  </div>
 </div>
 <script>
 let nodes=[], state={}, testingNodeIds = new Set(), batchTesting = false;
@@ -6537,88 +6619,6 @@ URL.revokeObjectURL(url);
 
 </script>
 
-  <div id="page_egress" class="page-content" style="display:none;">
-    <!-- 添加出站管理弹窗：让用户给新实例起名（备注/用途）+ 选端口（留空自动顺延） -->
-    <div id="add_egress_modal" style="display:none; position:fixed; inset:0; background:rgba(15,23,42,0.45); z-index:1000; align-items:center; justify-content:center;">
-      <div style="background:var(--bg-card,#fff); border:1px solid var(--border-color,#e2e8f0); border-radius:12px; padding:24px; width:min(420px, 90vw); box-shadow:0 20px 50px rgba(15,23,42,0.25);">
-        <h3 style="margin:0 0 4px; font-size:18px; font-weight:600; color:var(--text-primary,#0f172a);">添加出站管理实例</h3>
-        <p style="margin:0 0 16px; font-size:12px; color:var(--text-secondary,#64748b); line-height:1.6;">为新实例起个名字（留空自动生成）。端口默认自动顺延（7929 起），如有冲突可手动指定空闲端口。</p>
-        <label style="display:block; font-size:12px; color:var(--text-secondary,#64748b); margin-bottom:6px;">实例名称 <span style="color:var(--text-muted,#94a3b8);">（可选）</span></label>
-        <input id="add_egress_name" type="text" maxlength="40" placeholder="例如：东京-住宅IP" style="width:100%; box-sizing:border-box; height:36px; padding:0 12px; border-radius:8px; border:1px solid var(--border-color,#cbd5e1); background:var(--bg-surface,#f8fafc); color:var(--text-primary,#0f172a); font-size:13px; outline:none;" />
-        <label style="display:block; font-size:12px; color:var(--text-secondary,#64748b); margin:14px 0 6px;">本地监听端口 <span style="color:var(--text-muted,#94a3b8);">（留空自动顺延）</span></label>
-        <input id="add_egress_port" type="number" min="1024" max="65535" placeholder="7929 / 7930 / ..." style="width:100%; box-sizing:border-box; height:36px; padding:0 12px; border-radius:8px; border:1px solid var(--border-color,#cbd5e1); background:var(--bg-surface,#f8fafc); color:var(--text-primary,#0f172a); font-size:13px; outline:none;" />
-        <label style="display:block; font-size:12px; color:var(--text-secondary,#64748b); margin:14px 0 6px;">锁定国家/地区 <span style="color:var(--text-muted,#94a3b8);">（可选，留空则自动选最快）</span></label>
-        <select id="add_egress_country" style="width:100%; box-sizing:border-box; height:36px; padding:0 12px; border-radius:8px; border:1px solid var(--border-color,#cbd5e1); background:var(--bg-surface,#f8fafc); color:var(--text-primary,#0f172a); font-size:13px; outline:none; cursor:pointer;">
-          <option value="">不锁定（自动选最快）</option>
-        </select>
-        <div id="add_egress_error" style="display:none; margin-top:10px; padding:8px 10px; font-size:12px; color:#dc2626; background:rgba(220,38,38,0.08); border:1px solid rgba(220,38,38,0.20); border-radius:6px;"></div>
-        <div style="display:flex; justify-content:flex-end; gap:8px; margin-top:18px;">
-          <button class="btn-ghost" onclick="closeAddEgressModal()" style="height:36px; padding:0 14px; border-radius:8px;">取消</button>
-          <button class="btn-primary" id="add_egress_submit_btn" onclick="submitAddEgress()" style="height:36px; padding:0 16px; border-radius:8px; font-weight:600;">添加</button>
-        </div>
-      </div>
-    </div>
-    <section class="toolbar" style="flex-direction:column; align-items:stretch; gap:14px;">
-      <div style="display:flex;align-items:center;justify-content:space-between;gap:12px;flex-wrap:wrap;">
-        <div>
-          <h2 style="margin:0 0 4px;font-size:20px;font-weight:600;">出站管理</h2>
-          <p style="color:var(--text-muted);margin:0;font-size:13px;line-height:1.6;">这里只决定要几个出站管理实例，每个实例是一套独立的 <strong style="color:var(--text);">HTTP/SOCKS5 代理端口</strong>。端口自动顺延（默认 7928，新增从 7929 起）。所有出站管理<strong style="color:var(--text);">共用同一份节点池</strong>（只拉取一次，不重复抓）。</p>
-        </div>
-        <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center;">
-          <button class="btn-primary" onclick="openAddEgressModal()" style="height:36px;padding:0 14px;border-radius:8px;font-weight:600;display:inline-flex;align-items:center;gap:6px;">
-            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" style="width:14px;height:14px;"><path d="M12 5v14M5 12h14"/></svg>
-            添加出站管理
-          </button>
-          <button class="btn-ghost" id="btn_refresh_egress" onclick="loadEgressWithFeedback()" style="height:36px;padding:0 14px;border-radius:8px;display:inline-flex;align-items:center;gap:6px;">
-            <svg id="refresh_egress_icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="width:14px;height:14px;"><path d="M23 4v6h-6M1 20v-6h6M3.51 9a9 9 0 0114.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0020.49 15"/></svg>
-            <span id="refresh_egress_text">刷新状态</span>
-          </button>
-        </div>
-      </div>
-      <div id="page_egress_hint" style="color: var(--text-muted); font-size: 12px; text-align: right;">点击下方任一卡片查看其可用节点列表；点击卡片右侧"删除"按钮可移除该出站管理实例。新添加的实例会出现在列表顶部。</div>
-    </section>
-    <!-- 出站管理专用：顶部活动节点卡（按出站管理页选中出口渲染，与主页独立） -->
-    <section class="active-node-section" id="egress_active_node_card" style="margin-bottom: 24px;"></section>
-    <!-- 出站模块：出口实例卡片区（与主页"出口实例"模块视觉完全一致：铺满 + 扁平标题 + 8px 间距） -->
-    <div id="egress_module_card" style="background: var(--bg-surface, #f8fafc); border: 1px solid var(--border-color, #e2e8f0); border-radius: 12px; padding: 16px 20px; margin-bottom: 24px; box-shadow: var(--shadow-sm);">
-      <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:12px;">
-        <div style="display:flex;align-items:center;gap:8px;">
-          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="width:16px;height:16px;color:var(--text-muted);"><path stroke-linecap="round" stroke-linejoin="round" d="M13 10V3L4 14h7v7l9-11h-7z"/></svg>
-          <strong style="font-size:14px;color:var(--text-primary);">出口实例</strong>
-        </div>
-        <span id="egress_card_count_label" style="font-size:12px;color:var(--text-muted);"></span>
-      </div>
-      <div id="egress_status_blocks" style="display:flex;flex-direction:column;gap:8px;"></div>
-      <div id="egress_empty_hint" style="display:none;padding:16px 0;text-align:center;color:var(--text-muted);font-size:13px;">
-        暂无出口实例。<br><span style="font-size:12px;color:var(--text-secondary);">点击上方「添加出站管理」创建第一个实例。</span>
-      </div>
-    </div>
-    <!-- 出站管理专用：节点列表区（按选中出口过滤共享节点池，仅在该页内显示） -->
-    <div id="egress_node_section" style="display:none; margin-bottom: 24px;">
-      <div style="display: flex; align-items: center; justify-content: space-between; margin-bottom: 16px; flex-wrap: wrap; gap: 8px;">
-        <span style="font-size: 15px; font-weight: 600; color: var(--text-primary);">节点列表</span>
-        <span id="egress_filter_label" style="font-size: 12px; color: var(--text-secondary);"></span>
-      </div>
-      <div class="table-wrapper" style="margin-top: 0;">
-        <div class="table-container">
-          <table>
-            <thead>
-              <tr>
-                <th style="width: 90px;">状态</th>
-                <th style="width: 160px;">IP 地址 : 端口</th>
-                <th>物理位置</th>
-                <th style="width: 80px;">IP 类型</th>
-                <th style="width: 80px;">延迟</th>
-                <th style="width: 80px;">健康度</th>
-                <th style="width: 160px;">操作</th>
-              </tr>
-            </thead>
-            <tbody id="egress_rows"></tbody>
-          </table>
-        </div>
-      </div>
-    </div>
-  </div>
 
 </main>
 </div>
