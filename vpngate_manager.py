@@ -5149,6 +5149,7 @@ async function loadEgress() {
           egressStatusList[i].force_country = c.force_country || "";
           egressStatusList[i].routing_ip_type = c.routing_ip_type || "all";
           egressStatusList[i].min_health_score = c.min_health_score || 0;
+          egressStatusList[i].fixed_node_id = c.fixed_node_id || "";
         }
       }
     } catch(cfgErr) { console.warn("[loadEgress] 路由配置合并失败（卡片将显示默认值）:", cfgErr); }
@@ -5437,14 +5438,27 @@ async function renderEgressNodeList() {
     return;
   }
   section.style.display = "";
-  // 拉取该出口的路由配置（默认 / 子出口各异）
-  let cfg = null;
-  try {
-    const r = await fetchWithCsrf("./api/egress_routing_config?slot_id=" + encodeURIComponent(egressSelectedEgressSlotId));
-    cfg = (r && r.config) || null;
-  } catch (e) { cfg = null; }
   const slotKey = egressSelectedEgressSlotId;
   const slotIsDefault = (slotKey === "__default__");
+  // 路由配置优先从已合并的 egressStatusList 读取：loadEgress() 已经把每个出口的
+  // routing_mode / force_country / routing_ip_type 等合并进列表项，卡片显示的就是这份数据。
+  // 不再独立 fetch /api/egress_routing_config——两份数据源若时序/取值不一致，会导致子出口
+  // 节点列表不按配置过滤（显示全部/错误的国家）。统一用 egressStatusList，与卡片完全一致。
+  let cfg = null;
+  if (!slotIsDefault && egressStatusList && egressStatusList.length) {
+    const found = egressStatusList.find(function(e) {
+      return (e.slot_id || "") === slotKey;
+    });
+    if (found) {
+      cfg = {
+        routing_mode: found.routing_mode,
+        force_country: found.force_country,
+        routing_ip_type: found.routing_ip_type,
+        min_health_score: found.min_health_score || 0,
+        fixed_node_id: found.fixed_node_id || ""
+      };
+    }
+  }
   const routingMode = (cfg && cfg.routing_mode) || (slotIsDefault ? (state.routing_mode || "auto") : "auto");
   const forceCountry = (cfg && cfg.force_country) || (slotIsDefault ? (state.force_country || "") : "");
   const routingIpType = (cfg && cfg.routing_ip_type) || (slotIsDefault ? (state.routing_ip_type || "all") : "all");
