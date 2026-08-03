@@ -3604,6 +3604,7 @@ INDEX_HTML = r"""<!doctype html>
     @media (max-width: 576px) { .vps-links { grid-template-columns: 1fr; } }
     @keyframes spin { from { transform: rotate(0deg); } to { transform: rotate(360deg); } }
     @keyframes modalFadeIn { from { transform: scale(0.97); opacity: 0; } to { transform: scale(1); opacity: 1; } }
+    @keyframes toastIn { from { transform: translateX(16px); opacity: 0; } to { transform: translateX(0); opacity: 1; } }
     
     /* 表格样式 - 覆盖login页面遗留的danger-bg */
     table { border-collapse: collapse; table-layout: fixed; }
@@ -4865,9 +4866,11 @@ async function toggleFavorite(id, event) {
 }
 
 let pollInterval = null;
+let _pollStableOffCount = 0;
 
 function startConnectionPolling() {
   if (pollInterval) clearInterval(pollInterval);
+  _pollStableOffCount = 0;
   pollInterval = setInterval(async () => {
     try {
       const data = await fetchWithCsrf("./api/nodes");
@@ -4876,14 +4879,22 @@ function startConnectionPolling() {
       stableSortNodes();
       updateCountryFilter();
       render();
-      
+
       if (!state.is_connecting) {
-        clearInterval(pollInterval);
-        pollInterval = null;
-        try {
-          const result = await fetchWithCsrf("./api/test_proxy", { method: "POST" });
-        } catch(pe){}
-        load();
+        // 防抖：自动重连/重试过程中后端会瞬时把 is_connecting 切回 False
+        // 再立刻置 True，若只在第一次 False 就停止轮询，状态卡会闪现"连接失败"。
+        // 需连续 2 次确认未连接才算真正结束，避免假报错与频繁红色提示。
+        _pollStableOffCount++;
+        if (_pollStableOffCount >= 2) {
+          clearInterval(pollInterval);
+          pollInterval = null;
+          try {
+            await fetchWithCsrf("./api/test_proxy", { method: "POST" });
+          } catch(pe){}
+          load();
+        }
+      } else {
+        _pollStableOffCount = 0;
       }
     } catch(pe) {
       clearInterval(pollInterval);
@@ -4895,6 +4906,12 @@ function startConnectionPolling() {
 
 async function connectNode(id, slotId){
   slotId = slotId || "__default__";
+  // 防重复点击：正在连接中再次点击直接忽略，避免后端 is_connecting 守卫
+  // 把第二次请求判为"已在连接"而弹报错（假报错），但第一次其实会成功。
+  if (state && state.is_connecting) {
+    showToast("正在连接中，请稍候…", "warning");
+    return;
+  }
   state.is_connecting = true;
   state.active_openvpn_node_id = id;
   state.active_node_latency = "正在连接";
@@ -4909,25 +4926,23 @@ async function connectNode(id, slotId){
       headers:{"Content-Type":"application/json"},
       body:JSON.stringify({id, slot_id: slotId})
     });
-    const result = r;
-    if (!result.ok) {
-      alert("连接失败: " + (result.error || "未知错误"));
-      if (pollInterval) {
-        clearInterval(pollInterval);
-        pollInterval = null;
-      }
+    // 不再用 alert 弹窗：连接的最终成功/失败以轮询（startConnectionPolling）
+    // 读到的真实状态为准，状态卡会实时反映"连接中 / 已连接 / 连接失败"。
+    // 这里只处理"请求根本没被后端接受"的异常（子出口未运行、参数错误等）。
+    if (!r.ok) {
+      const err = (r.error || "未知错误");
+      // 这类属于配置/运行态错误，确实需要告知，但用非阻塞 toast 而非 alert。
+      if (pollInterval) { clearInterval(pollInterval); pollInterval = null; }
       state.is_connecting = false;
       render();
+      showToast("无法发起连接：" + err, "error");
       return;
     }
   } catch(e) {
-    alert("连接请求错误");
-    if (pollInterval) {
-      clearInterval(pollInterval);
-      pollInterval = null;
-    }
+    if (pollInterval) { clearInterval(pollInterval); pollInterval = null; }
     state.is_connecting = false;
     render();
+    showToast("连接请求发送失败，请检查网络后重试", "error");
   }
 }
 
@@ -4941,11 +4956,12 @@ async function disconnectNode(){
         await fetchWithCsrf("./api/test_proxy", { method: "POST" });
       } catch(pe){}
       load();
+      showToast("已断开连接", "info");
     } else {
-      alert("断开连接失败: " + (result.error || "未知错误"));
+      showToast("断开连接失败: " + (result.error || "未知错误"), "error");
     }
   } catch (e) {
-    alert("请求断开连接失败");
+    showToast("请求断开连接失败", "error");
   }
 }
 
@@ -5095,6 +5111,35 @@ async function loadEgress() {
 async function loadEgressStatus() { return loadEgress(); }
 
 function escAttr(s) { return String(s || "").replace(/'/g, "&#39;").replace(/"/g, "&quot;").replace(/</g, "&lt;"); }
+
+// ---- 轻量级 Toast 提示（非阻塞，替代 alert 弹窗） ----
+// type: "info" | "success" | "error" | "warning"
+function showToast(message, type) {
+  type = type || "info";
+  const container = document.getElementById("toast_container");
+  if (!container) { console.warn("[toast]", type, message); return; }
+  const colors = {
+    info:    { bg: "rgba(99,102,241,0.12)",  border: "rgba(99,102,241,0.35)",  fg: "#6366f1" },
+    success: { bg: "rgba(16,185,129,0.12)",  border: "rgba(16,185,129,0.35)",  fg: "#10b981" },
+    error:   { bg: "rgba(220,38,38,0.10)",   border: "rgba(220,38,38,0.35)",   fg: "#dc2626" },
+    warning: { bg: "rgba(245,158,11,0.12)",  border: "rgba(245,158,11,0.35)",  fg: "#f59e0b" },
+  };
+  const c = colors[type] || colors.info;
+  const el = document.createElement("div");
+  el.style.cssText = "padding:10px 14px; font-size:13px; line-height:1.5; border-radius:10px; background:" + c.bg +
+    "; border:1px solid " + c.border + "; color:var(--text-primary,#0f172a); box-shadow:0 8px 24px rgba(15,23,42,0.18);" +
+    " backdrop-filter:blur(6px); display:flex; align-items:flex-start; gap:8px; animation:toastIn .18s ease-out;";
+  el.innerHTML = '<span style="color:' + c.fg + '; font-weight:700; flex:0 0 auto;">●</span>' +
+    '<span style="flex:1;">' + esc(message) + '</span>';
+  container.appendChild(el);
+  // 自动消失
+  setTimeout(function() {
+    el.style.transition = "opacity .25s ease, transform .25s ease";
+    el.style.opacity = "0";
+    el.style.transform = "translateX(12px)";
+    setTimeout(function() { if (el.parentNode) el.parentNode.removeChild(el); }, 260);
+  }, type === "error" ? 4000 : 2600);
+}
 
 // ---- 共享的卡片 HTML 构造器 ----
 // 主页（mode='home'）只提供断开按钮 + 选中切换，无删除；不可添加新实例。
@@ -5389,10 +5434,18 @@ function openAddEgressModal() {
   const modal = $("add_egress_modal");
   const nameInput = $("add_egress_name");
   const portInput = $("add_egress_port");
+  const countryInput = $("add_egress_country");
   const errBox = $("add_egress_error");
   if (!modal) return;
   if (nameInput) { nameInput.value = ""; nameInput.focus(); }
   if (portInput) portInput.value = "";
+  // 用当前已加载的节点池填充国家下拉（避免再拉一次 /api/nodes）
+  if (countryInput) {
+    const countries = [];
+    (nodes || []).forEach(function(n) { if (n && n.country && countries.indexOf(n.country) < 0) countries.push(n.country); });
+    countryInput.innerHTML = '<option value="">不锁定（自动选最快）</option>' +
+      countries.map(function(c) { return '<option value="' + escAttr(c) + '">' + esc(c) + '</option>'; }).join("");
+  }
   if (errBox) { errBox.style.display = "none"; errBox.textContent = ""; }
   modal.style.display = "flex";
 }
@@ -5403,10 +5456,12 @@ function closeAddEgressModal() {
 async function submitAddEgress() {
   const nameInput = $("add_egress_name");
   const portInput = $("add_egress_port");
+  const countryInput = $("add_egress_country");
   const errBox = $("add_egress_error");
   const submitBtn = $("add_egress_submit_btn");
   if (!nameInput || !portInput) return;
   const name = (nameInput.value || "").trim();
+  const country = (countryInput && countryInput.value) ? countryInput.value.trim() : "";
   let port = 0;
   const portRaw = (portInput.value || "").trim();
   if (portRaw) {
@@ -5422,7 +5477,7 @@ async function submitAddEgress() {
   try {
     const data = await fetchWithCsrf("./api/egress_regions", {
       method: "POST",
-      body: JSON.stringify({ name: name, port: port || 0 }),
+      body: JSON.stringify({ name: name, port: port || 0, country: country }),
     });
     if (!data.ok) {
       if (errBox) { errBox.style.display = "block"; errBox.textContent = "添加失败：" + (data.error || "未知错误"); }
@@ -5459,16 +5514,20 @@ async function homeDisconnectEgress(slotId) {
   if (!confirm("确定断开该出口？该出口的隧道将停止")) return;
   try {
     const data = await fetchWithCsrf("./api/egress_disconnect", { method: "POST", body: JSON.stringify({ slot_id: slotId }) });
-    if (!data.ok) { alert("断开失败：" + (data.error || "")); return; }
+    if (!data.ok) { showToast("断开失败：" + (data.error || ""), "error"); return; }
+    showToast("已断开该出口", "info");
     await loadHomeEgress();
-  } catch (e) { alert("请求断开连接失败"); }
+  } catch (e) { showToast("请求断开连接失败", "error"); }
 }
 async function disconnectEgress(slotId) {
   if (!confirm("确定断开该出站管理？该出口的隧道将停止")) return;
-  const data = await fetchWithCsrf("./api/egress_disconnect", { method: "POST", body: JSON.stringify({ slot_id: slotId }) });
-  if (!data.ok) { alert("断开失败：" + (data.error || "")); return; }
-  // 只刷新出站管理页（不影响主页）
-  if (window.loadEgress) loadEgress();
+  try {
+    const data = await fetchWithCsrf("./api/egress_disconnect", { method: "POST", body: JSON.stringify({ slot_id: slotId }) });
+    if (!data.ok) { showToast("断开失败：" + (data.error || ""), "error"); return; }
+    showToast("已断开该出站管理", "info");
+    // 只刷新出站管理页（不影响主页）
+    if (window.loadEgress) loadEgress();
+  } catch (e) { showToast("请求断开连接失败", "error"); }
 }
 
 function switchPage(name) {
@@ -6328,8 +6387,11 @@ URL.revokeObjectURL(url);
 
 // 页面初始化
 (function(){
-  var saved = localStorage.getItem("vpngate_page") || "overview";
-  switchPage(saved);
+  // 进站强制着陆主页（overview）：不再依赖 localStorage 记录的上次位置。
+  // 之前若上次停留在 egress 页，刷新/进站会直跳 egress 页，而此时
+  // loadEgress() 尚未拿到数据（API 未就绪或列表为空），导致呈现空白界面。
+  // 固定从主页进入，主页数据 loadHomeEgress() 在 switchPage 内被调用，进站即有内容。
+  switchPage("overview");
 })();
 
 // 主题初始化
@@ -6355,6 +6417,10 @@ URL.revokeObjectURL(url);
         <input id="add_egress_name" type="text" maxlength="40" placeholder="例如：东京-住宅IP" style="width:100%; box-sizing:border-box; height:36px; padding:0 12px; border-radius:8px; border:1px solid var(--border-color,#cbd5e1); background:var(--bg-surface,#f8fafc); color:var(--text-primary,#0f172a); font-size:13px; outline:none;" />
         <label style="display:block; font-size:12px; color:var(--text-secondary,#64748b); margin:14px 0 6px;">本地监听端口 <span style="color:var(--text-muted,#94a3b8);">（留空自动顺延）</span></label>
         <input id="add_egress_port" type="number" min="1024" max="65535" placeholder="7929 / 7930 / ..." style="width:100%; box-sizing:border-box; height:36px; padding:0 12px; border-radius:8px; border:1px solid var(--border-color,#cbd5e1); background:var(--bg-surface,#f8fafc); color:var(--text-primary,#0f172a); font-size:13px; outline:none;" />
+        <label style="display:block; font-size:12px; color:var(--text-secondary,#64748b); margin:14px 0 6px;">锁定国家/地区 <span style="color:var(--text-muted,#94a3b8);">（可选，留空则自动选最快）</span></label>
+        <select id="add_egress_country" style="width:100%; box-sizing:border-box; height:36px; padding:0 12px; border-radius:8px; border:1px solid var(--border-color,#cbd5e1); background:var(--bg-surface,#f8fafc); color:var(--text-primary,#0f172a); font-size:13px; outline:none; cursor:pointer;">
+          <option value="">不锁定（自动选最快）</option>
+        </select>
         <div id="add_egress_error" style="display:none; margin-top:10px; padding:8px 10px; font-size:12px; color:#dc2626; background:rgba(220,38,38,0.08); border:1px solid rgba(220,38,38,0.20); border-radius:6px;"></div>
         <div style="display:flex; justify-content:flex-end; gap:8px; margin-top:18px;">
           <button class="btn-ghost" onclick="closeAddEgressModal()" style="height:36px; padding:0 14px; border-radius:8px;">取消</button>
@@ -6426,6 +6492,11 @@ URL.revokeObjectURL(url);
 
 </main>
 </div>
+
+<!-- 轻量级 Toast 容器：连接/断开等操作的结果提示统一在这里非阻塞展示，
+     不再用 alert() 弹窗（避免"假报错"——连接实际成功却先弹了报错窗）。 -->
+<div id="toast_container" style="position:fixed; top:18px; right:18px; z-index:2000; display:flex; flex-direction:column; gap:10px; max-width:340px;"></div>
+
 </body></html>"""
 
 def check_proxy_health(port: int | None = None, dev: str | None = None) -> dict[str, Any]:
@@ -7350,10 +7421,34 @@ class Handler(BaseHTTPRequestHandler):
                     port = 7929 + len(slots)
                 country = str(payload.get("country") or "").strip()
                 node_id = str(payload.get("node_id") or "").strip()
+                # 国家筛选：若用户在建实例时选定了国家，则默认锁定该地区
+                # （routing_mode=fixed_region + force_country=country），否则保持自动。
+                # 注意：必须把 force_country 同时写进 config 与 region 两个字段，
+                # 否则 _get_egress_routing_config 的降级逻辑只会拿到空值，
+                # 导致新建出口在卡片/节点列表里被显示为"所有节点"（国家筛选丢失）。
+                if country:
+                    slot_config = {
+                        "routing_mode": "fixed_region",
+                        "force_country": country,
+                        "routing_ip_type": "all",
+                        "min_health_score": 0,
+                        "fixed_node_id": node_id,
+                        "connection_enabled": True,
+                    }
+                else:
+                    slot_config = {
+                        "routing_mode": "auto",
+                        "force_country": "",
+                        "routing_ip_type": "all",
+                        "min_health_score": 0,
+                        "fixed_node_id": node_id,
+                        "connection_enabled": True,
+                    }
                 slot_def = {
                     "slot_id": slot_id,
                     "name": name,  # 实例名（可选；用户可在弹窗里给新实例起个备注/用途）
                     "region": country,
+                    "config": slot_config,
                     "proxy_port": port,
                     "fixed_node_id": node_id,
                     "enabled": True,

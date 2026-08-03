@@ -363,7 +363,7 @@ class TestEgressPageStyleAndModal(unittest.TestCase):
                       "renderEgressCards 必须调用 selectEgressCard 切换选中")
 
     def test_overview_label_renamed_to_home(self):
-        """侧边栏"概览"已改为"主页"，作为默认着陆页。"""
+        """侧边栏"概览"已改为"主页"，作为强制默认着陆页（不再依赖 localStorage 上次位置）。"""
         mgr_path = Path(__file__).resolve().parent.parent / "vpngate_manager.py"
         body = mgr_path.read_text(encoding="utf-8")
         # 侧边栏 nav_overview 的标签必须改为"主页"
@@ -371,9 +371,10 @@ class TestEgressPageStyleAndModal(unittest.TestCase):
         self.assertGreater(idx, 0, "侧边栏必须有 nav_overview 项")
         snippet = body[idx:idx + 800]
         self.assertIn("主页", snippet, "侧边栏 nav_overview 的标签必须是'主页'")
-        # 页面默认初始化：localStorage 默认值仍为 overview（page_overview），即主页
-        self.assertIn('localStorage.getItem("vpngate_page") || "overview"',
-                      body, "默认着陆页必须保持 overview（即视觉上的'主页'）")
+        # 进站强制着陆主页：init 必须直接 switchPage("overview")，
+        # 不再读 localStorage 的上次位置（否则上次停在 egress 页会空白）。
+        self.assertIn('switchPage("overview")', body,
+                      "初始化必须强制 switchPage('overview')，进站即显示主页而非空白")
 
 
 class TestEgressUnifiedUi(unittest.TestCase):
@@ -903,6 +904,72 @@ class TestEgressModuleCardAndFeedback(unittest.TestCase):
         self.assertGreater(len(fn), 0)
         self.assertIn("egress_empty_hint", fn, "renderEgressCards 必须处理 egress_empty_hint 显示/隐藏")
         self.assertIn("egress_card_count_label", fn, "renderEgressCards 必须更新 egress_card_count_label")
+
+    # ==================== 本轮新增：进站着陆 + 创建出口国家筛选 + 连接报错一致性 ====================
+
+    def test_create_modal_has_country_selector(self):
+        """添加出站管理弹窗必须提供"锁定国家/地区"选择器，且 openAddEgressModal 会填充它。"""
+        mgr_path = Path(__file__).resolve().parent.parent / "vpngate_manager.py"
+        body = mgr_path.read_text(encoding="utf-8")
+        self.assertIn('id="add_egress_country"', body, "创建弹窗必须有 add_egress_country 选择器")
+        fn = self._extract_function_body(body, "function openAddEgressModal")
+        self.assertIn("add_egress_country", fn, "openAddEgressModal 必须操作 add_egress_country")
+        self.assertIn("countries", fn, "openAddEgressModal 必须用节点池填充国家列表")
+
+    def test_submitAddEgress_sends_country(self):
+        """submitAddEgress 必须读取国家选择器并随请求发送 country 字段。"""
+        mgr_path = Path(__file__).resolve().parent.parent / "vpngate_manager.py"
+        body = mgr_path.read_text(encoding="utf-8")
+        fn = self._extract_function_body(body, "async function submitAddEgress")
+        self.assertIn("add_egress_country", fn, "submitAddEgress 必须读取 add_egress_country")
+        self.assertIn('country: country', fn, "submitAddEgress 必须把 country 发到后端")
+
+    def test_backend_create_persists_country_into_config(self):
+        """后端 /api/egress_regions POST：当用户选定国家时，必须把 force_country 同时写进
+        region 与 config（routing_mode=fixed_region），否则新建出口会在卡片/节点列表里
+        被显示为"所有节点"（国家筛选丢失）。"""
+        mgr_path = Path(__file__).resolve().parent.parent / "vpngate_manager.py"
+        body = mgr_path.read_text(encoding="utf-8")
+        # 定位 POST 处理函数（含 slot_def = { 的那一个，而非只读的 GET 分支）
+        post_idx = body.find('slot_def = {')
+        self.assertGreater(post_idx, 0, "必须存在创建出口的 POST 处理逻辑")
+        fn = body[post_idx - 1200:post_idx + 1200]
+        self.assertIn('"routing_mode": "fixed_region"', fn,
+                      "选定国家时 config.routing_mode 必须是 fixed_region")
+        self.assertIn('"force_country": country', fn,
+                      "选定国家时 config.force_country 必须写入 country")
+        self.assertIn('"config": slot_config', fn,
+                      "slot_def 必须包含 config 字段（持久化国家筛选）")
+
+    def test_toast_system_present(self):
+        """必须提供非阻塞 Toast 容器与 showToast 函数，替代 alert 弹窗（避免假报错）。"""
+        mgr_path = Path(__file__).resolve().parent.parent / "vpngate_manager.py"
+        body = mgr_path.read_text(encoding="utf-8")
+        self.assertIn('id="toast_container"', body, "必须有 toast_container 容器")
+        self.assertIn("function showToast", body, "必须有 showToast 函数")
+        self.assertIn("@keyframes toastIn", body, "必须有 toastIn 入场动画")
+
+    def test_connectNode_no_alert_uses_toast_and_guards_double_click(self):
+        """connectNode 不得再用 alert 弹窗（假报错），改用 showToast；且必须防重复点击。"""
+        mgr_path = Path(__file__).resolve().parent.parent / "vpngate_manager.py"
+        body = mgr_path.read_text(encoding="utf-8")
+        fn = self._extract_function_body(body, "async function connectNode")
+        self.assertGreater(len(fn), 0)
+        self.assertNotIn("alert(", fn, "connectNode 不得再用 alert 弹窗（会造成假报错）")
+        self.assertIn("showToast", fn, "connectNode 必须用 showToast 提示")
+        # 防重复点击：正在连接时直接 return
+        self.assertIn("state.is_connecting", fn, "connectNode 必须检查 state.is_connecting 防重复点击")
+        self.assertIn("正在连接中", fn, "重复点击时应提示'正在连接中'")
+
+    def test_startConnectionPolling_stabilization(self):
+        """startConnectionPolling 必须做防抖（连续 2 次 is_connecting=False 才结束轮询），
+        避免自动重连/重试的瞬时间隙被误判为"已结束"而闪现"连接失败"。"""
+        mgr_path = Path(__file__).resolve().parent.parent / "vpngate_manager.py"
+        body = mgr_path.read_text(encoding="utf-8")
+        fn = self._extract_function_body(body, "function startConnectionPolling")
+        self.assertGreater(len(fn), 0)
+        self.assertIn("_pollStableOffCount", fn, "startConnectionPolling 必须有防抖计数")
+        self.assertIn(">= 2", fn, "必须连续 2 次未连接才算真正结束")
 
 
 if __name__ == "__main__":
