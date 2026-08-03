@@ -6558,7 +6558,7 @@ URL.revokeObjectURL(url);
         </div>
       </div>
     </div>
-    <section class="toolbar" style="padding:20px; flex-direction:column; align-items:stretch; gap:14px;">
+    <section class="toolbar" style="flex-direction:column; align-items:stretch; gap:14px;">
       <div style="display:flex;align-items:center;justify-content:space-between;gap:12px;flex-wrap:wrap;">
         <div>
           <h2 style="margin:0 0 4px;font-size:20px;font-weight:600;">出站管理</h2>
@@ -6578,28 +6578,28 @@ URL.revokeObjectURL(url);
       <div id="page_egress_hint" style="color: var(--text-muted); font-size: 12px; text-align: right;">点击下方任一卡片查看其可用节点列表；点击卡片右侧"删除"按钮可移除该出站管理实例。新添加的实例会出现在列表顶部。</div>
     </section>
     <!-- 出站管理专用：顶部活动节点卡（按出站管理页选中出口渲染，与主页独立） -->
-    <section class="active-node-section" id="egress_active_node_card" style="margin: 0 20px 24px 20px;"></section>
-    <!-- 出站模块：出口实例卡片区（与下方节点列表模块视觉一致） -->
-    <div id="egress_module_card" style="margin: 0 20px 24px 20px; background: var(--surface); border: 1px solid var(--border); border-radius: 10px; box-shadow: var(--shadow-sm); overflow: hidden;">
-      <div style="display:flex;align-items:center;justify-content:space-between;padding:14px 16px;border-bottom:1px solid var(--border);background:var(--surface-2);">
-        <span style="font-size:15px;font-weight:600;color:var(--text-primary);display:flex;align-items:center;gap:8px;">
-          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="width:16px;height:16px;color:var(--primary);"><path d="M5 12h14M12 5l7 7-7 7"/></svg>
-          出口实例
-        </span>
-        <span id="egress_card_count_label" style="font-size:12px;color:var(--text-secondary);"></span>
+    <section class="active-node-section" id="egress_active_node_card" style="margin-bottom: 24px;"></section>
+    <!-- 出站模块：出口实例卡片区（与主页"出口实例"模块视觉完全一致：铺满 + 扁平标题 + 8px 间距） -->
+    <div id="egress_module_card" style="background: var(--bg-surface, #f8fafc); border: 1px solid var(--border-color, #e2e8f0); border-radius: 12px; padding: 16px 20px; margin-bottom: 24px;">
+      <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:12px;">
+        <div style="display:flex;align-items:center;gap:8px;">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="width:16px;height:16px;color:var(--text-muted);"><path stroke-linecap="round" stroke-linejoin="round" d="M13 10V3L4 14h7v7l9-11h-7z"/></svg>
+          <strong style="font-size:14px;color:var(--text-primary);">出口实例</strong>
+        </div>
+        <span id="egress_card_count_label" style="font-size:12px;color:var(--text-muted);"></span>
       </div>
-      <div id="egress_status_blocks" style="display:flex;flex-direction:column;gap:12px;padding:16px;"></div>
-      <div id="egress_empty_hint" style="display:none;padding:28px 16px;text-align:center;color:var(--text-muted);font-size:13px;">
+      <div id="egress_status_blocks" style="display:flex;flex-direction:column;gap:8px;"></div>
+      <div id="egress_empty_hint" style="display:none;padding:16px 0;text-align:center;color:var(--text-muted);font-size:13px;">
         暂无出口实例。<br><span style="font-size:12px;color:var(--text-secondary);">点击上方「添加出站管理」创建第一个实例。</span>
       </div>
     </div>
     <!-- 出站管理专用：节点列表区（按选中出口过滤共享节点池，仅在该页内显示） -->
-    <div id="egress_node_section" style="display:none; margin: 0 20px 24px 20px;">
+    <div id="egress_node_section" style="display:none; margin-bottom: 24px;">
       <div style="display: flex; align-items: center; justify-content: space-between; margin-bottom: 16px; flex-wrap: wrap; gap: 8px;">
         <span style="font-size: 15px; font-weight: 600; color: var(--text-primary);">节点列表</span>
         <span id="egress_filter_label" style="font-size: 12px; color: var(--text-secondary);"></span>
       </div>
-      <div class="table-wrapper" style="margin-top: 0;">
+      <div class="table-wrap" style="margin-top: 0;">
         <div class="table-container">
           <table>
             <thead>
