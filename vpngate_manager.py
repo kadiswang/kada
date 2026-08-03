@@ -5200,79 +5200,82 @@ function showToast(message, type) {
 // 主页（mode='home'）只提供断开按钮 + 选中切换，无删除；不可添加新实例。
 // 出站管理（mode='egress'）提供断开 + 删除（仅非默认）。
 function _buildEgressCardHTML(e, mode) {
-  const modeMap = {auto:"自动配置",fixed_ip:"固定IP",fixed_region:"固定地区",favorites:"收藏"};
-  const ipMap = {all:"所有IP",residential:"住宅IP",hosting:"机房IP"};
-  const modeText = modeMap[e.routing_mode] || (e.routing_mode || "自动");
-  const ipType = ipMap[e.routing_ip_type] || (e.routing_ip_type || "所有IP");
+  // 与主页 _buildHomeEgressSummaryHTML 统一风格：紧凑单行卡片
   const isDefault = !!e.is_default;
   const isDown = !e.alive;
-  const country = e.force_country ? translateCountry(e.force_country) : "自动";
-  const nodeInfo = e.active_node_id
-    ? ("节点 " + e.active_node_id)
-    : (e.last_check_message || (e.is_connecting ? "正在拉节点…" : "未连接"));
-  const port = e.proxy_port || 7928;
   const titleLabel = isDefault ? "默认出口" : (e.name || e.slot_id);
+  const port = e.proxy_port || 7928;
   const slotKey = isDefault ? "__default__" : e.slot_id;
   const isSelected = (mode === "home" ? homeSelectedEgressSlotId : egressSelectedEgressSlotId) === slotKey;
-  const selectedStyle = isSelected
-    ? "outline: 2px solid var(--primary, #6366f1); outline-offset: -2px; box-shadow: 0 0 0 4px rgba(99,102,241,0.15);"
-    : "cursor: pointer;";
-  const iconColor = isDown ? "#94a3b8" : (isDefault ? "#10b981" : "var(--primary, #6366f1)");
-  const iconBg = isDown ? "rgba(148,163,184,0.12)" : (isDefault ? "rgba(16,185,129,0.15)" : "rgba(99,102,241,0.15)");
-  const iconBorder = isDown ? "rgba(148,163,184,0.20)" : (isDefault ? "rgba(16,185,129,0.30)" : "rgba(99,102,241,0.30)");
-  const iconPath = isDown
-    ? "<path d='M18.364 18.364A9 9 0 005.636 5.636m12.728 12.728A9 9 0 015.636 5.636m12.728 12.728L5.636 5.636'/>"
-    : "<path d='M13 10V3L4 14h7v7l9-11h-7z'/>";
-  const statusBadge = isDown
-    ? "<span class='badge' style='background: rgba(148,163,184,0.15); color: #64748b; border-color: rgba(148,163,184,0.3);'>未启动</span>"
-    : (e.active_node_id
-      ? "<span class='badge available'><span class='badge-pulse'></span>已连接</span>"
-      : (e.is_connecting
-        ? "<span class='badge' style='background: rgba(245,158,11,0.15); color: #f59e0b; border-color: rgba(245,158,11,0.3);'>连接中</span>"
-        : "<span class='badge available'><span class='badge-pulse'></span>运行中</span>"));
-  // 主页：只保留"断开"按钮；删除/添加入口仅在出站管理页。
-  let actions;
+
+  // 国家标签（仅固定地区模式显示）
+  const country = e.force_country ? translateCountry(e.force_country) : "";
+  const showCountry = country && (e.routing_mode === "fixed_region");
+
+  // 状态徽标（与主页一致的小药丸样式）
+  let statusBadge;
   if (isDown) {
-    actions = "<span style='color:var(--text-muted);font-size:13px;'>未启动</span>";
-  } else if (mode === "home") {
-    actions = "<button class='btn-danger' style='height:36px;padding:0 14px;border-radius:8px;display:inline-flex;align-items:center;gap:6px;' onclick=\"event.stopPropagation();homeDisconnectEgress('" + escAttr(e.slot_id) + "')\">" +
-      "<svg viewBox='0 0 24 24' fill='none' stroke='currentColor' stroke-width='2' style='width:14px;height:14px;'><path d='M10 14l2-2m0 0l2-2m-2 2l-2-2m2 2l2 2m7-2a9 9 0 11-18 0 9 9 0 0118 0z'/></svg>" +
-      "断开" +
-      "</button>";
+    statusBadge = "<span style='font-size:11px;color:#94a3b8;background:rgba(148,163,184,0.12);padding:1px 8px;border-radius:10px;border:1px solid rgba(148,163,184,0.2);'>未启动</span>";
+  } else if (e.active_node_id) {
+    statusBadge = "<span style='font-size:11px;color:#059669;background:rgba(5,150,105,0.10);padding:1px 8px;border-radius:10px;border:1px solid rgba(5,150,105,0.2);'>已连接</span>";
+  } else if (e.is_connecting) {
+    statusBadge = "<span style='font-size:11px;color:#d97706;background:rgba(217,119,6,0.10);padding:1px 8px;border-radius:10px;border:1px solid rgba(217,119,6,0.2);'>连接中</span>";
   } else {
-    actions = "<button class='btn-danger' style='height:36px;padding:0 14px;border-radius:8px;display:inline-flex;align-items:center;gap:6px;' onclick=\"event.stopPropagation();disconnectEgress('" + escAttr(e.slot_id) + "')\">" +
-      "<svg viewBox='0 0 24 24' fill='none' stroke='currentColor' stroke-width='2' style='width:14px;height:14px;'><path d='M10 14l2-2m0 0l2-2m-2 2l-2-2m2 2l2 2m7-2a9 9 0 11-18 0 9 9 0 0118 0z'/></svg>" +
-      "断开" +
+    statusBadge = "<span style='font-size:11px;color:#059669;background:rgba(5,150,105,0.10);padding:1px 8px;border-radius:10px;border:1px solid rgba(5,150,105,0.2);'>运行中</span>";
+  }
+
+  // 节点信息简述
+  const nodeBrief = e.active_node_id
+    ? ("<span style='color:var(--text-muted);font-size:12px;font-family:ui-monospace,\"SF Mono\",Menlo,monospace;'>" + escAttr(e.active_node_id) + "</span>")
+    : (e.last_check_message
+      ? "<span style='color:var(--text-muted);font-size:12px;'>" + escAttr(e.last_check_message) + "</span>"
+      : "<span style='color:var(--text-muted);font-size:12px;'>未连接</span>");
+
+  // 操作按钮（仅出站管理页显示，主页不显示）
+  let actionsHtml = "";
+  if (mode !== "home" && !isDown) {
+    actionsHtml =
+      "<button class='btn-danger' style='height:28px;padding:0 10px;border-radius:6px;font-size:12px;display:inline-flex;align-items:center;gap:4px;flex-shrink:0;' onclick=\"event.stopPropagation();disconnectEgress('" + escAttr(e.slot_id) + "')\">" +
+        "<svg viewBox='0 0 24 24' fill='none' stroke='currentColor' stroke-width='2' style='width:12px;height:12px;'><path d='M10 14l2-2m0 0l2-2m-2 2l-2-2m2 2l2 2m7-2a9 9 0 11-18 0 9 9 0 0118 0z'/></svg>断开" +
       "</button>" +
       (!isDefault
-        ? "<button class='btn-ghost' style='height:36px;padding:0 12px;border-radius:8px;margin-left:8px;display:inline-flex;align-items:center;gap:6px;' onclick=\"event.stopPropagation();delEgress('" + escAttr(e.slot_id) + "')\">" +
-          "<svg viewBox='0 0 24 24' fill='none' stroke='currentColor' stroke-width='2' style='width:14px;height:14px;'><path d='M3 6h18M8 6V4a2 2 0 012-2h4a2 2 0 012 2v2m3 0v14a2 2 0 01-2 2H7a2 2 0 01-2-2V6h14z'/></svg>" +
-          "删除" +
+        ? "<button class='btn-ghost' style='height:28px;padding:0 8px;border-radius:6px;font-size:12px;margin-left:6px;display:inline-flex;align-items:center;gap:4px;flex-shrink:0;' onclick=\"event.stopPropagation();delEgress('" + escAttr(e.slot_id) + "')\">" +
+            "<svg viewBox='0 0 24 24' fill='none' stroke='currentColor' stroke-width='2' style='width:12px;height:12px;'><path d='M3 6h18M8 6V4a2 2 0 012-2h4a2 2 0 012 2v2m3 0v14a2 2 0 01-2 2H7a2 2 0 01-2-2V6h14z'/></svg>删除" +
           "</button>"
         : "");
   }
+
+  const selectedBg = isSelected ? "background: rgba(99,102,241,0.06); border-color: rgba(99,102,241,0.25);" : "";
   const selectHandler = mode === "home" ? "selectHomeEgressCard" : "selectEgressCard";
-  return "<div class='active-card' style='" + selectedStyle + "' onclick=\"" + selectHandler + "('" + escAttr(slotKey) + "')\">" +
-    "<div class='active-card-info'>" +
-      "<div class='stat-icon-wrapper' style='background: " + iconBg + "; border-color: " + iconBorder + "; width: 48px; height: 48px; border-radius: 12px;'>" +
-        "<svg xmlns='http://www.w3.org/2000/svg' class='stat-icon' fill='none' viewBox='0 0 24 24' stroke='currentColor' stroke-width='2.5' style='color: " + iconColor + "; width: 24px; height: 24px;'>" + iconPath + "</svg>" +
+
+  return "<div style='display:flex;align-items:center;gap:12px;padding:10px 14px;border-radius:10px;border:1px solid var(--border-color,#e2e8f0);background:var(--bg-surface,#f8fafc);cursor:pointer;transition:all 0.15s;" + selectedBg + "' onclick=\"" + selectHandler + "('" + escAttr(slotKey) + "')\">" +
+    // 左侧图标（与主页一致：32px 圆角方块）
+    "<div style='width:32px;height:32px;border-radius:8px;display:flex;align-items:center;justify-content:center;flex-shrink:0;" +
+      (isDown ? "background:rgba(148,163,184,0.12);" : (isDefault ? "background:rgba(16,185,129,0.12);" : "background:rgba(99,102,241,0.12);")) + ">" +
+      "<svg xmlns='http://www.w3.org/2000/svg' fill='none' viewBox='0 0 24 24' stroke='currentColor' stroke-width='2.5' style='width:16px;height:16px;" +
+        (isDown ? "color:#94a3b8" : (isDefault ? "color:#10b981" : "color:var(--primary,#6366f1)")) + "'>" +
+        (isDown
+          ? "<path d='M18.364 18.364A9 9 0 005.636 5.636m12.728 12.728A9 9 0 015.636 5.636m12.728 12.728L5.636 5.636'/>"
+          : "<path d='M13 10V3L4 14h7v7l9-11h-7z'/>") +
+      "</svg></div>" +
+    // 中间信息区（与主页一致的两行布局）
+    "<div style='flex:1;min-width:0;'>" +
+      "<div style='display:flex;align-items:center;gap:8px;'>" +
+        statusBadge +
+        "<strong style='font-size:13px;color:var(--text-primary);'>" + escAttr(titleLabel) + "</strong>" +
+        (showCountry ? "<span style='font-size:11px;color:var(--primary,#6366f1);background:rgba(99,102,241,0.08);padding:1px 7px;border-radius:6px;'>" + escAttr(country) + "</span>" : "") +
+        (isSelected ? "<span style='font-size:10px;color:var(--primary,#6366f1);background:rgba(99,102,241,0.10);padding:1px 6px;border-radius:6px;'>已选中</span>" : "") +
       "</div>" +
-      "<div class='active-card-details'>" +
-        "<div class='active-card-title'>" +
-          statusBadge +
-          "<strong>" + escAttr(titleLabel) + "</strong>" +
-          "<span class='port-num' style='font-family: ui-monospace, \"SF Mono\", Menlo, monospace; font-size: 13px; color: var(--primary, #6366f1); background: rgba(99,102,241,0.08); padding: 2px 8px; border-radius: 6px;'>端口 " + port + "</span>" +
-          (isSelected ? "<span style='font-size:11px;color:var(--primary,#6366f1);background:rgba(99,102,241,0.1);padding:2px 8px;border-radius:6px;'>● 已选中</span>" : "") +
-        "</div>" +
-        "<div class='active-card-meta' style='margin-top: 4px;'>" +
-          "<span>模式: <strong>" + escAttr(modeText) + "</strong></span>" +
-          "<span style='margin-left: 12px;'>国家: <strong>" + escAttr(country) + "</strong></span>" +
-          "<span style='margin-left: 12px;'>类型: <strong>" + escAttr(ipType) + "</strong></span>" +
-          "<span style='margin-left: 12px;'>节点: <strong>" + escAttr(nodeInfo) + "</strong></span>" +
-        "</div>" +
+      "<div style='margin-top:3px;display:flex;align-items:center;gap:8px;'>" +
+        nodeBrief +
+        "<span style='color:var(--text-muted);font-size:11px;'>" + (isDown ? "" : ":" + port + "") + "</span>" +
       "</div>" +
     "</div>" +
-    "<div onclick=\"event.stopPropagation();\">" + actions + "</div>" +
+    // 右侧操作区（出站管理显示按钮，主页显示箭头）
+    (mode !== "home"
+      ? ("<div style='display:flex;align-items:center;gap:6px;flex-shrink:0;' onclick=\"event.stopPropagation();\">" + actionsHtml + "</div>")
+      : "<svg xmlns='http://www.w3.org/2000/svg' fill='none' viewBox='0 0 24 24' stroke='currentColor' stroke-width='2' style='width:14px;height:14px;color:var(--text-muted);flex-shrink:0;'><path stroke-linecap='round' stroke-linejoin='round' d='M9 5l7 7-7 7'/></svg>"
+    ) +
   "</div>";
 }
 

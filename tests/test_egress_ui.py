@@ -338,19 +338,22 @@ class TestEgressPageStyleAndModal(unittest.TestCase):
                       "loadEgress 必须把默认出口也保留在状态列表（statusResp.egress 整体赋值）")
 
     def test_render_egress_uses_active_card_style(self):
-        """_buildEgressCardHTML 必须用与主页完全同款 .active-card 样式，包含 mode/country/ip/node 字段。"""
+        """_buildEgressCardHTML 必须用与主页 _buildHomeEgressSummaryHTML 完全同款的紧凑单行卡片样式。"""
         mgr_path = Path(__file__).resolve().parent.parent / "vpngate_manager.py"
         body = mgr_path.read_text(encoding="utf-8")
         fn_body = self._extract_function_body(body, "function _buildEgressCardHTML")
         self.assertTrue(fn_body, "_buildEgressCardHTML 函数必须存在")
-        # 必须用 .active-card
-        self.assertIn("active-card", fn_body)
-        # 必须有 48px 图标块
-        self.assertIn("width: 48px", fn_body)
-        # 必须显示 模式/国家/类型/节点 四个真实配置字段
-        for field in ["模式:", "国家:", "类型:", "节点:"]:
-            self.assertIn(field, fn_body,
-                          f"renderEgressCards 必须显示 {field} 字段（与主页同款信息密度）")
+        # 与主页一致：紧凑单行布局（flex + padding:10px 14px + border-radius:10px）
+        self.assertIn("display:flex", fn_body)
+        self.assertIn("padding:10px 14px", fn_body)
+        self.assertIn("border-radius:10px", fn_body)
+        # 与主页一致：32px 小图标
+        self.assertIn("width:32px;height:32px", fn_body)
+        # 与主页一致：状态徽标小药丸样式
+        self.assertIn("border-radius:10px", fn_body)
+        # 出站管理页必须显示操作按钮（断开/删除）
+        self.assertIn("disconnectEgress", fn_body)
+        self.assertIn("delEgress", fn_body)
         # 右侧必须有断开按钮（删除按钮就近放在卡片上，不再跑到页面底部表格里）
         self.assertIn("btn-danger", fn_body)
         self.assertIn("disconnectEgress", fn_body, "卡片必须有断开按钮调用 disconnectEgress")
