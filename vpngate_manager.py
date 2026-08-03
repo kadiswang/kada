@@ -5087,6 +5087,26 @@ async function loadHomeEgress() {
   try {
     const statusResp = await fetchWithCsrf("./api/egress_status_all");
     homeEgressStatusList = statusResp.egress || [];
+
+    // 合并路由配置到状态项（同 loadEgress 的修复：aggregate_egress_status 不含路由字段）
+    try {
+      var cfgPromises = homeEgressStatusList.map(function(e) {
+        var sid = e.is_default ? "__default__" : (e.slot_id || "__default__");
+        return fetchWithCsrf("./api/egress_routing_config?slot_id=" + encodeURIComponent(sid))
+          .catch(function() { return null; });
+      });
+      var cfgResults = await Promise.all(cfgPromises);
+      for (var i = 0; i < homeEgressStatusList.length && i < cfgResults.length; i++) {
+        var cr = cfgResults[i];
+        if (cr && cr.config) {
+          var c = cr.config;
+          homeEgressStatusList[i].routing_mode = c.routing_mode || "auto";
+          homeEgressStatusList[i].force_country = c.force_country || "";
+          homeEgressStatusList[i].routing_ip_type = c.routing_ip_type || "all";
+        }
+      }
+    } catch(cfgErr) { /* 静默失败，卡片显示默认值 */ }
+
     // 主页默认自动选默认出口（首次进入 / 清空选择后）
     if (homeSelectedEgressSlotId === null) {
       const defaultEgress = homeEgressStatusList.find(function(e) { return e.is_default; });
@@ -5109,6 +5129,30 @@ async function loadEgress() {
     ]);
     egressStatusList = statusResp.egress || [];
     egressRegions = regionsResp.regions || [];
+
+    // 关键修复：将每个出口的路由配置（routing_mode / force_country 等）
+    // 合并到状态列表项中。否则 aggregate_egress_status() 只返回基础状态
+    // （alive / active_node_id / proxy_port），不含路由配置，
+    // 导致卡片永远显示 "自动配置 / 自动"（fallback 默认值）。
+    try {
+      const cfgPromises = egressStatusList.map(function(e) {
+        const sid = e.is_default ? "__default__" : (e.slot_id || "__default__");
+        return fetchWithCsrf("./api/egress_routing_config?slot_id=" + encodeURIComponent(sid))
+          .catch(function() { return null; });
+      });
+      const cfgResults = await Promise.all(cfgPromises);
+      for (var i = 0; i < egressStatusList.length && i < cfgResults.length; i++) {
+        var cr = cfgResults[i];
+        if (cr && cr.config) {
+          var c = cr.config;
+          egressStatusList[i].routing_mode = c.routing_mode || "auto";
+          egressStatusList[i].force_country = c.force_country || "";
+          egressStatusList[i].routing_ip_type = c.routing_ip_type || "all";
+          egressStatusList[i].min_health_score = c.min_health_score || 0;
+        }
+      }
+    } catch(cfgErr) { console.warn("[loadEgress] 路由配置合并失败（卡片将显示默认值）:", cfgErr); }
+
     // 出站管理页默认选默认出口（首次进入 / 清空选择后）
     if (egressSelectedEgressSlotId === null) {
       const defaultEgress = egressStatusList.find(function(e) { return e.is_default; });
@@ -5253,6 +5297,9 @@ function _buildHomeEgressSummaryHTML(e) {
   const port = e.proxy_port || 7928;
   const slotKey = isDefault ? "__default__" : e.slot_id;
   const isSelected = homeSelectedEgressSlotId === slotKey;
+  // 国家标签（仅当配置了固定国家时显示，避免每行都显示"自动"）
+  const country = e.force_country ? translateCountry(e.force_country) : "";
+  const showCountry = country && (e.routing_mode === "fixed_region");
   // 状态徽标
   let statusBadge;
   if (isDown) {
@@ -5286,6 +5333,7 @@ function _buildHomeEgressSummaryHTML(e) {
       "<div style='display:flex;align-items:center;gap:8px;'>" +
         statusBadge +
         "<strong style='font-size:13px;color:var(--text-primary);'>" + escAttr(titleLabel) + "</strong>" +
+        (showCountry ? "<span style='font-size:11px;color:var(--primary,#6366f1);background:rgba(99,102,241,0.08);padding:1px 7px;border-radius:6px;'>" + escAttr(country) + "</span>" : "") +
         (isSelected ? "<span style='font-size:10px;color:var(--primary,#6366f1);background:rgba(99,102,241,0.10);padding:1px 6px;border-radius:6px;'>已选中</span>" : "") +
       "</div>" +
       "<div style='margin-top:3px;display:flex;align-items:center;gap:8px;'>" +
