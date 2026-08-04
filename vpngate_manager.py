@@ -1963,6 +1963,30 @@ def connect_node(node_id: str) -> str:
         except Exception:
             pass
 
+def connect_node_async(node_id: str) -> str:
+    """后台异步建立连接，立即返回，避免阻塞 HTTP 服务导致切换瞬间转发失败（左上角误报错）。
+
+    若当前已有连接任务进行中（如维护线程正在连），会等待其结束后立即切到用户指定节点，
+    确保手动切换意图最终生效，且全程不阻塞网页/转发端口（"不闪断"切换）。
+    """
+    node_id = str(node_id or "").strip()
+    if not node_id:
+        return "节点 id 为空，忽略"
+
+    def _runner() -> None:
+        waited = 0.0
+        while is_connecting and waited < 10:
+            time.sleep(0.5)
+            waited += 0.5
+        try:
+            connect_node(node_id)
+        except Exception as exc:
+            print(f"[异步连接] 连接节点 {node_id} 失败: {exc}", flush=True)
+            log_to_json("ERROR", "VPN", f"异步连接节点 {node_id} 失败: {exc}")
+
+    threading.Thread(target=_runner, daemon=True).start()
+    return "切换请求已受理，正在后台建立连接..."
+
 def maintain_valid_nodes(force: bool = False) -> str:
     global active_openvpn_process, active_openvpn_node_id, is_connecting
     ensure_dirs()
@@ -5041,30 +5065,39 @@ async function connectNode(id, slotId){
 
   startConnectionPolling();
 
-  try {
-    const r = await fetchWithCsrf("./api/connect",{
-      method:"POST",
-      headers:{"Content-Type":"application/json"},
-      body:JSON.stringify({id, slot_id: slotId})
-    });
-    // 不再用 alert 弹窗：连接的最终成功/失败以轮询（startConnectionPolling）
-    // 读到的真实状态为准，状态卡会实时反映"连接中 / 已连接 / 连接失败"。
-    // 这里只处理"请求根本没被后端接受"的异常（子出口未运行、参数错误等）。
-    if (!r.ok) {
-      const err = (r.error || "未知错误");
-      // 这类属于配置/运行态错误，确实需要告知，但用非阻塞 toast 而非 alert。
+  // 切换瞬间子出口进程可能正在重启/重连，转发请求会瞬时失败；
+  // 但后台已受理连接，轮询会确认结果。这里重试几次吸收抖动，
+  // 仅在确实无法受理时才报错，避免误弹"连接请求发送失败"。
+  let lastErr = null;
+  for (let attempt = 1; attempt <= 3; attempt++) {
+    try {
+      const r = await fetchWithCsrf("./api/connect",{
+        method:"POST",
+        headers:{"Content-Type":"application/json"},
+        body:JSON.stringify({id, slot_id: slotId})
+      });
+      // 后端已改为后台异步受理（立即返回 ok），这里只要受理成功就返回，
+      // 最终连接结果以轮询读到的真实状态为准，全程不弹错误。
+      if (r && r.ok) {
+        return;
+      }
+      // 明确的业务错误（如子出口未运行），需要告知用户
       if (pollInterval) { clearInterval(pollInterval); pollInterval = null; }
       state.is_connecting = false;
       render();
-      showToast("无法发起连接：" + err, "error");
+      showToast("无法发起连接：" + (r.error || "未知错误"), "error");
       return;
+    } catch(e) {
+      lastErr = e;
+      if (attempt < 3) {
+        await new Promise(res => setTimeout(res, 800));
+        continue;
+      }
     }
-  } catch(e) {
-    if (pollInterval) { clearInterval(pollInterval); pollInterval = null; }
-    state.is_connecting = false;
-    render();
-    showToast("连接请求发送失败，请检查网络后重试", "error");
   }
+  // 三次均为瞬时网络/转发抖动：请求已在后台受理的概率极高，
+  // 不弹错误，保留轮询继续确认真实连接状态（状态卡会显示最终成败）。
+  console.warn("connect 请求瞬时失败，已交由轮询确认:", lastErr);
 }
 
 async function disconnectNode(){
@@ -7888,7 +7921,7 @@ class Handler(BaseHTTPRequestHandler):
                             **( {"error": fwd_result.get("error")} if not ok else {} ),
                         })
                 else:
-                    self.send_json({"ok": True, "message": connect_node(node_id)})
+                    self.send_json({"ok": True, "message": connect_node_async(node_id)})
             except Exception as exc:
                 self.send_json({"ok": False, "error": str(exc)}, HTTPStatus.INTERNAL_SERVER_ERROR)
         elif effective_path == "/api/test_node":
