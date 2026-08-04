@@ -14,6 +14,7 @@ KADA 多地区编排器（阶段 2/3：路由与代理隔离 + 多 Slot 并发�
 from __future__ import annotations
 
 import os
+import signal
 import subprocess
 import sys
 import threading
@@ -61,7 +62,9 @@ class RegionProcess:
         env["VPNGATE_DATA_DIR"] = str(self.data_dir)
         env["VPNGATE_TUN_DEV"] = self.cfg.tun_dev
         env["VPNGATE_ROUTE_TABLE"] = str(self.cfg.route_table)
-        env["VPNGATE_FWMARK"] = "0"  # 出网由 SO_BINDTODEVICE 按 tun 设备隔离，无需 fwmark
+        # fwmark 与路由表一一对应：即使出网已由 SO_BINDTODEVICE 按 tun 设备隔离，
+        # 仍通过 fwmark 规则做双重保险，并确保配置与实际运行一致。
+        env["VPNGATE_FWMARK"] = str(self.cfg.fwmark if self.cfg.fwmark >= 0 else 0)
         env["LOCAL_PROXY_PORT"] = str(self.proxy_port)
         env["UI_PORT"] = str(self.ui_port)
         # 所有出口共用父进程发布的共享节点池（只拉取一次官方 API）
@@ -151,10 +154,28 @@ class RegionProcess:
                     stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
                 )
             else:
+                # Linux：子进程通过 start_new_session=True 创建新进程组，
+                # 因此 killpg 可终止整棵进程树（含 OpenVPN 孙进程），避免 tun
+                # 设备和路由表被残留进程占用。
                 try:
-                    os.kill(pid, 9)
-                except Exception:
-                    self.proc.kill()
+                    os.killpg(pid, signal.SIGTERM)
+                except ProcessLookupError:
+                    pass
+                except OSError:
+                    try:
+                        os.kill(pid, signal.SIGTERM)
+                    except Exception:
+                        pass
+                try:
+                    self.proc.wait(timeout=5)
+                except subprocess.TimeoutExpired:
+                    try:
+                        os.killpg(pid, signal.SIGKILL)
+                    except Exception:
+                        try:
+                            os.kill(pid, signal.SIGKILL)
+                        except Exception:
+                            self.proc.kill()
         except Exception:
             try:
                 self.proc.kill()
@@ -228,34 +249,51 @@ class SlotOrchestrator:
         desired = self._manager.from_ui_config(ui_cfg)
         desired_ids = {c.slot_id for c in desired}
 
-        # 关键修复：子出口的 TUN 设备必须避开父进程（默认出口）占用的 tun0。
-        # slots.py normalize() 从 idx=0 开始分配 tun0/tun1/...，但父进程已用 tun0，
-        # 所以子出口需要 +1 偏移：第一个子出口用 tun1，第二个用 tun2，以此类推。
+        # 关键修复：子出口的所有资源必须避开父进程（默认出口）。
+        # slots.py normalize() 从 idx=0 开始分配 tun0/table100/fwmark0/...，
+        # 但父进程已用 tun0/table100/fwmark0，所以子出口需要整体 +1 偏移：
+        # 第一个子出口用 tun1/table101/fwmark1，第二个用 tun2/table102/fwmark2，以此类推。
         tuned_slots = []
         for ci, cfg in enumerate(desired):
-            # 子出口固定使用 tun{ci+1}（ci=0 -> tun1, ci=1 -> tun2, ...），
-            # 始终避开父进程（默认出口）占用的 tun0。基于列表索引计算，
-            # 而非在已有 tun_dev 上 +1，这样多次 sync 不会让 tun_dev 持续累加
-            # （tun0->tun1->tun2->... 失控），避免系统 tun 设备号耗尽。
-            expected = f"tun{ci + 1}"
-            if cfg.tun_dev != expected:
+            # tun_dev 偏移 +1
+            expected_tun = f"tun{ci + 1}"
+            if cfg.tun_dev != expected_tun:
                 old_tun = cfg.tun_dev
-                cfg.tun_dev = expected
-                tuned_slots.append(f"{cfg.slot_id}: {old_tun}->{cfg.tun_dev}")
+                cfg.tun_dev = expected_tun
+                tuned_slots.append(f"{cfg.slot_id}: tun {old_tun}->{cfg.tun_dev}")
+            # route_table 偏移 +1
+            expected_table = self._manager.base_route_table + ci + 1
+            if cfg.route_table != expected_table:
+                old_table = cfg.route_table
+                cfg.route_table = expected_table
+                tuned_slots.append(f"{cfg.slot_id}: table {old_table}->{cfg.route_table}")
+            # fwmark 偏移 +1
+            expected_fwmark = ci + 1
+            if cfg.fwmark != expected_fwmark:
+                old_fwmark = cfg.fwmark
+                cfg.fwmark = expected_fwmark
+                tuned_slots.append(f"{cfg.slot_id}: fwmark {old_fwmark}->{cfg.fwmark}")
         if tuned_slots:
-            print(f"[sync] TUN 设备偏移（避开父进程 tun0）：{', '.join(tuned_slots)}", flush=True)
+            print(f"[sync] 资源偏移（避开父进程）：{', '.join(tuned_slots)}", flush=True)
 
-        # 将修正后的 tun_dev 写回持久化配置，确保服务重启后不丢失偏移
+        # 将修正后的资源写回持久化配置，确保服务重启后不丢失偏移
         if tuned_slots and ui_cfg.get("slots"):
             persist_needed = False
             for s in ui_cfg.get("slots", []):
                 for cfg in desired:
-                    if str(s.get("slot_id")) == cfg.slot_id and s.get("tun_dev") != cfg.tun_dev:
-                        s["tun_dev"] = cfg.tun_dev
-                        persist_needed = True
+                    if str(s.get("slot_id")) == cfg.slot_id:
+                        if s.get("tun_dev") != cfg.tun_dev:
+                            s["tun_dev"] = cfg.tun_dev
+                            persist_needed = True
+                        if s.get("route_table") != cfg.route_table:
+                            s["route_table"] = cfg.route_table
+                            persist_needed = True
+                        if s.get("fwmark") != cfg.fwmark:
+                            s["fwmark"] = cfg.fwmark
+                            persist_needed = True
             if persist_needed:
                 self._persist(ui_cfg)
-                print(f"[sync] 已将修正后的 TUN 设备写回持久化配置", flush=True)
+                print(f"[sync] 已将修正后的资源写回持久化配置", flush=True)
 
         # 停止已移除/停用的地区
         for slot_id, rp in list(self.regions.items()):
