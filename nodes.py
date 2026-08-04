@@ -428,6 +428,34 @@ def apply_routing_filters(
     return candidates
 
 
+def filter_persist_nodes_by_ip_type(
+    nodes: list[dict[str, Any]],
+    ui_cfg: dict[str, Any],
+    active_id: str | None = None,
+) -> list[dict[str, Any]]:
+    """按设置里的 IP 出站类型决定刷新时保留哪些节点。
+
+    与 apply_routing_filters 不同：这里只做**持久化清理**，不处理路由模式、
+    国家、健康度等运行时过滤条件；并且始终保留当前 active 节点，避免误删
+    正在使用的节点。
+    """
+    routing_ip_type = ui_cfg.get("routing_ip_type", "all")
+    if routing_ip_type == "all":
+        return list(nodes)
+
+    def allowed(node: dict[str, Any]) -> bool:
+        if active_id and node.get("id") == active_id:
+            return True
+        ip_type = node.get("ip_type")
+        if routing_ip_type == "residential":
+            return ip_type in ("residential", "mobile")
+        if routing_ip_type == "hosting":
+            return ip_type == "hosting"
+        return True
+
+    return [n for n in nodes if allowed(n)]
+
+
 def normalized_country_name(country: Any) -> str:
     value = str(country or "").strip()
     return vpn_utils.COUNTRY_TRANSLATIONS.get(value, value)

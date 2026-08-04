@@ -112,6 +112,39 @@ class TestApplyRoutingFilters(unittest.TestCase):
         self.assertEqual([n["id"] for n in out], ["n1"])
 
 
+class TestFilterPersistNodesByIpType(unittest.TestCase):
+    def _nodes(self):
+        return [
+            {"id": "r1", "ip_type": "residential"},
+            {"id": "m1", "ip_type": "mobile"},
+            {"id": "h1", "ip_type": "hosting"},
+            {"id": "u1", "ip_type": ""},
+        ]
+
+    def test_all_keeps_everything(self):
+        cfg = {"routing_ip_type": "all"}
+        out = m.filter_persist_nodes_by_ip_type(self._nodes(), cfg)
+        self.assertEqual(len(out), 4)
+
+    def test_residential_keeps_residential_mobile_and_active(self):
+        cfg = {"routing_ip_type": "residential"}
+        out = m.filter_persist_nodes_by_ip_type(self._nodes(), cfg, active_id="h1")
+        ids = {n["id"] for n in out}
+        self.assertIn("r1", ids)
+        self.assertIn("m1", ids)
+        self.assertIn("h1", ids)  # active 节点必须保留
+        self.assertNotIn("u1", ids)
+
+    def test_hosting_keeps_hosting_and_active(self):
+        cfg = {"routing_ip_type": "hosting"}
+        out = m.filter_persist_nodes_by_ip_type(self._nodes(), cfg, active_id="r1")
+        ids = {n["id"] for n in out}
+        self.assertIn("h1", ids)
+        self.assertIn("r1", ids)  # active 节点必须保留
+        self.assertNotIn("m1", ids)
+        self.assertNotIn("u1", ids)
+
+
 class TestProbePriorityKey(unittest.TestCase):
     def test_sorts_by_ping_ascending(self):
         nodes = [
