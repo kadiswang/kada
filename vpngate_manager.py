@@ -2034,7 +2034,7 @@ def maintain_valid_nodes(force: bool = False) -> str:
             if not any(token in diag_msg for token in ["[ERR_", "错误代码"]):
                 err_code, raw_diag = vpn_utils.diagnose_api_failure(API_URL)
                 diag_msg = f"[错误代码 {err_code}] 获取节点失败: {exc} | 诊断结果: {raw_diag}"
-            set_state(last_fetch_at=time.time(), last_fetch_status="error", last_fetch_message=diag_msg)
+            set_state(last_fetch_at=time.time(), last_fetch_status="error", last_fetch_message=diag_msg, last_refresh_at=time.time())
             candidates = []
 
         if not candidates:
@@ -2042,6 +2042,7 @@ def maintain_valid_nodes(force: bool = False) -> str:
 
         with lock:
             current_nodes = read_nodes()
+            current_ids = {str(n.get("id")) for n in current_nodes if n.get("id")}
             # 只保留可用的旧节点，不可用的删除
             kept_nodes = [n for n in current_nodes if n.get("probe_status") == "available" or n.get("active")]
             current_by_id = {
@@ -2150,6 +2151,7 @@ def maintain_valid_nodes(force: bool = False) -> str:
                             last_check_message=message,
                             active_openvpn_node_id=active_openvpn_node_id,
                             valid_nodes=valid_nodes_count,
+                            last_refresh_at=time.time(),
                         )
                         with lock:
                             final_nodes = read_nodes()
@@ -2236,12 +2238,16 @@ def maintain_valid_nodes(force: bool = False) -> str:
                     log_to_json("INFO", "Main", f"节点过滤: 清理 {removed} 个非家宽/移动节点，保留 {len(filtered)} 个")
 
         valid_nodes_count = len([n for n in merged if n.get("probe_status") == "available"])
+        added_count = len([c for c in candidates if str(c.get("id")) not in current_ids])
         message = f"Fetched {len(candidates)} nodes. Tested {len(to_test_ids)} non-active nodes."
         set_state(
             last_check_at=time.time(),
             last_check_message=message,
             active_openvpn_node_id=active_openvpn_node_id,
             valid_nodes=valid_nodes_count,
+            last_refresh_at=time.time(),
+            last_fetch_added=added_count,
+            last_node_total=len(merged),
         )
         return message
     except Exception as e:
@@ -5062,6 +5068,38 @@ function _checkSwitchDone() {
   }
 }
 
+function showRefreshOverlay(text) {
+  let el = document.getElementById("refreshOverlay");
+  if (!el) {
+    if (!document.getElementById("switchSpinnerStyle")) {
+      const s = document.createElement("style");
+      s.id = "switchSpinnerStyle";
+      s.textContent = ".switch-spinner{width:20px;height:20px;border:3px solid #cbd5e1;border-top-color:#3b82f6;border-radius:50%;display:inline-block;animation:switchspin .8s linear infinite}@keyframes switchspin{to{transform:rotate(360deg)}}";
+      document.head.appendChild(s);
+    }
+    el = document.createElement("div");
+    el.id = "refreshOverlay";
+    el.style.cssText = "position:fixed;inset:0;display:flex;align-items:center;justify-content:center;background:rgba(0,0,0,0.45);z-index:9999;";
+    el.innerHTML = '<div style="background:var(--bg,#fff);color:var(--text,#222);padding:22px 30px;border-radius:12px;box-shadow:0 8px 30px rgba(0,0,0,.3);display:flex;align-items:center;gap:14px;font-size:15px;">'
+      + '<span class="switch-spinner"></span>'
+      + '<span id="refreshOverlayText">' + text + '</span>'
+      + '</div>';
+    document.body.appendChild(el);
+  } else {
+    const t = document.getElementById("refreshOverlayText");
+    if (t) t.textContent = text;
+  }
+  el.style.display = "flex";
+}
+function setRefreshOverlayText(text) {
+  const t = document.getElementById("refreshOverlayText");
+  if (t) t.textContent = text;
+}
+function hideRefreshOverlay() {
+  const el = document.getElementById("refreshOverlay");
+  if (el) el.style.display = "none";
+}
+
 function startConnectionPolling() {
   if (pollInterval) clearInterval(pollInterval);
   _pollStableOffCount = 0;
@@ -5890,38 +5928,34 @@ async function doRefreshNodes(){
   el.style.pointerEvents="none"; 
   el.style.opacity="0.6"; 
   el.innerHTML = `<svg style="animation: spin 1s linear infinite;" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M23 4v6h-6"/><path d="M1 20v-6h6"/><path d="M3.51 9a9 9 0 0114.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0020.49 15"/></svg> 更新中...`;
+  showRefreshOverlay("正在更新节点，请稍候…");
   try{
-    const beforeFetchAt = state.last_fetch_at || 0;
+    const beforeRefresh = state.last_refresh_at || 0;
     const resp = await fetchWithCsrf("./api/refresh_nodes",{method:"POST"});
-    if (resp.ok) {
+    if (resp && resp.ok) {
       const startTime = Date.now();
       while (Date.now() - startTime < 300000) {
-        await new Promise(r => setTimeout(r, 3000));
+        await new Promise(r => setTimeout(r, 2000));
         try {
           const status = await fetchWithCsrf("./api/status");
-          if (status) {
-            // 检测到新的拉取完成
-            if ((status.last_fetch_at || 0) > beforeFetchAt && status.last_fetch_status === "ok") {
-              await load();
-              el.innerHTML = `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M23 4v6h-6"/><path d="M1 20v-6h6"/><path d="M3.51 9a9 9 0 0114.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0020.49 15"/></svg> 更新节点`;
-              el.dataset.refreshing = "false";
-              el.style.pointerEvents=""; 
-              el.style.opacity="";
-              return;
+          const ra = status ? (status.last_refresh_at || 0) : 0;
+          if (ra > beforeRefresh) {
+            if (status.last_fetch_status === "error") {
+              setRefreshOverlayText("更新失败，请稍后重试");
+              await new Promise(r => setTimeout(r, 2200));
+              break;
             }
-            // 拉取失败
-            if ((status.last_fetch_at || 0) > beforeFetchAt && status.last_fetch_status === "error") {
-              el.innerHTML = `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M23 4v6h-6"/><path d="M1 20v-6h6"/><path d="M3.51 9a9 9 0 0114.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0020.49 15"/></svg> 更新节点`;
-              el.dataset.refreshing = "false";
-              el.style.pointerEvents=""; 
-              el.style.opacity="";
-              return;
-            }
+            const added = status.last_fetch_added || 0;
+            setRefreshOverlayText("更新完成，新增 " + added + " 个节点，正在刷新网页…");
+            await new Promise(r => setTimeout(r, 1600));
+            await load(); // 自动刷新网页，呈现最新节点列表
+            break;
           }
         } catch(e) {}
       }
     }
   } catch(e){}
+  hideRefreshOverlay();
   el.innerHTML = `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M23 4v6h-6"/><path d="M1 20v-6h6"/><path d="M3.51 9a9 9 0 0114.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0020.49 15"/></svg> 更新节点`;
   el.dataset.refreshing = "false";
   el.style.pointerEvents=""; 
