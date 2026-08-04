@@ -9,6 +9,14 @@ from unittest import mock
 import slot_manager
 import vpngate_manager as vm
 
+_BASE = Path(__file__).resolve().parent.parent
+_SOURCE_BODY = ""
+for _f in ("vpngate_manager.py", "web.py"):
+    _p = _BASE / _f
+    if _p.exists():
+        _SOURCE_BODY += _p.read_text(encoding="utf-8") + "\n"
+_SOURCE_BODY += vm.INDEX_HTML
+
 
 class _Resp:
     """模拟 urllib 响应：既是上下文管理器，又能 read() 出 JSON 字节。
@@ -283,8 +291,7 @@ class TestEgressPageStyleAndModal(unittest.TestCase):
     def test_open_network_modal_uses_cached_nodes_for_country_list(self):
         """代理设置弹窗加载国家列表时，必须用全局缓存的 nodes，不能再单独请求 /api/nodes。
         否则 300+ 节点的列表会阻塞弹窗打开（性能回归保护）。"""
-        mgr_path = Path(__file__).resolve().parent.parent / "vpngate_manager.py"
-        body = mgr_path.read_text(encoding="utf-8")
+        body = _SOURCE_BODY
         fn_body = self._extract_function_body(body, "async function openNetworkModal")
         self.assertTrue(fn_body, "openNetworkModal 函数必须存在")
         # 必须没有再调用 /api/nodes（避免重复拉 300+ 节点）
@@ -296,8 +303,7 @@ class TestEgressPageStyleAndModal(unittest.TestCase):
 
     def test_open_network_modal_does_not_double_json(self):
         """openNetworkModal 不能对 fetchWithCsrf 的结果再 .json()，否则会 TypeError 被吞导致国家下拉永远空。"""
-        mgr_path = Path(__file__).resolve().parent.parent / "vpngate_manager.py"
-        body = mgr_path.read_text(encoding="utf-8")
+        body = _SOURCE_BODY
         fn_body = self._extract_function_body(body, "async function openNetworkModal")
         self.assertTrue(fn_body, "openNetworkModal 函数必须存在")
         # 去掉注释行（// 开头），再检查实际代码中是否调用了 .json()
@@ -309,8 +315,7 @@ class TestEgressPageStyleAndModal(unittest.TestCase):
 
     def test_open_network_modal_shows_immediately(self):
         """openNetworkModal 必须先 display=flex 再 await 数据，不能阻塞 UI 响应。"""
-        mgr_path = Path(__file__).resolve().parent.parent / "vpngate_manager.py"
-        body = mgr_path.read_text(encoding="utf-8")
+        body = _SOURCE_BODY
         fn_body = self._extract_function_body(body, "async function openNetworkModal")
         self.assertTrue(fn_body)
         # display=flex 必须在第一个 await 之前
@@ -323,8 +328,7 @@ class TestEgressPageStyleAndModal(unittest.TestCase):
 
     def test_load_egress_fetches_status_for_mode_country_info(self):
         """loadEgress 必须并行请求 /api/egress_status_all，否则卡片无法展示 mode/country/IP/node 真实配置。"""
-        mgr_path = Path(__file__).resolve().parent.parent / "vpngate_manager.py"
-        body = mgr_path.read_text(encoding="utf-8")
+        body = _SOURCE_BODY
         fn_body = self._extract_function_body(body, "async function loadEgress")
         self.assertTrue(fn_body, "loadEgress 函数必须存在")
         # 必须并行请求两个端点
@@ -339,8 +343,7 @@ class TestEgressPageStyleAndModal(unittest.TestCase):
 
     def test_render_egress_uses_active_card_style(self):
         """_buildEgressCardHTML 必须用与主页 _buildHomeEgressSummaryHTML 完全同款的紧凑单行卡片样式。"""
-        mgr_path = Path(__file__).resolve().parent.parent / "vpngate_manager.py"
-        body = mgr_path.read_text(encoding="utf-8")
+        body = _SOURCE_BODY
         fn_body = self._extract_function_body(body, "function _buildEgressCardHTML")
         self.assertTrue(fn_body, "_buildEgressCardHTML 函数必须存在")
         # 与主页一致：紧凑单行布局（flex + padding:10px 14px + border-radius:10px）
@@ -367,8 +370,7 @@ class TestEgressPageStyleAndModal(unittest.TestCase):
 
     def test_overview_label_renamed_to_home(self):
         """侧边栏"概览"已改为"主页"，作为强制默认着陆页（不再依赖 localStorage 上次位置）。"""
-        mgr_path = Path(__file__).resolve().parent.parent / "vpngate_manager.py"
-        body = mgr_path.read_text(encoding="utf-8")
+        body = _SOURCE_BODY
         # 侧边栏 nav_overview 的标签必须改为"主页"
         idx = body.find('id="nav_overview"')
         self.assertGreater(idx, 0, "侧边栏必须有 nav_overview 项")
@@ -390,8 +392,7 @@ class TestEgressUnifiedUi(unittest.TestCase):
     def test_get_instance_egress_status_includes_diagnostic_fields(self):
         """get_instance_egress_status 必须包含 is_connecting/last_check_message/last_check_status
         等诊断字段，否则前端未连接卡片无法告诉用户为何没连。"""
-        mgr_path = Path(__file__).resolve().parent.parent / "vpngate_manager.py"
-        body = mgr_path.read_text(encoding="utf-8")
+        body = _SOURCE_BODY
         # 用 _extract_function_body 工具找函数
         from tests.test_egress_ui import TestEgressPageStyleAndModal as _Cls
         fn = _Cls._extract_function_body(body, "def get_instance_egress_status")
@@ -402,8 +403,7 @@ class TestEgressUnifiedUi(unittest.TestCase):
     def test_api_connect_forwards_to_child_when_slot_id_given(self):
         """父端 /api/connect 在 slot_id != __default__ 时必须把请求转发到子进程，
         否则用户从 egress 列表点"切换"只切默认出口，修复这个核心 bug。"""
-        mgr_path = Path(__file__).resolve().parent.parent / "vpngate_manager.py"
-        body = mgr_path.read_text(encoding="utf-8")
+        body = _SOURCE_BODY
         from tests.test_egress_ui import TestEgressPageStyleAndModal as _Cls
         # 找 /api/connect 的 handler
         idx = body.find('elif effective_path == "/api/connect":')
@@ -422,8 +422,7 @@ class TestEgressUnifiedUi(unittest.TestCase):
 
     def test_egress_routing_config_endpoint_default(self):
         """/api/egress_routing_config 必须能返回默认出口的配置（用于节点列表过滤）。"""
-        mgr_path = Path(__file__).resolve().parent.parent / "vpngate_manager.py"
-        body = mgr_path.read_text(encoding="utf-8")
+        body = _SOURCE_BODY
         # 1) handler 端点
         self.assertIn('"/api/egress_routing_config"', body, "必须有 /api/egress_routing_config handler")
         # 2) helper 函数
@@ -439,8 +438,7 @@ class TestEgressUnifiedUi(unittest.TestCase):
 
     def test_selected_egress_slot_id_state_and_toggle(self):
         """selectedEgressSlotId 全局 + selectEgress 切换 + renderEgressCards 渲染选中态。"""
-        mgr_path = Path(__file__).resolve().parent.parent / "vpngate_manager.py"
-        body = mgr_path.read_text(encoding="utf-8")
+        body = _SOURCE_BODY
         # 全局
         self.assertIn("let egressSelectedEgressSlotId", body, "必须有 egressSelectedEgressSlotId 全局状态（出站管理专用）")
         # 函数
@@ -451,8 +449,7 @@ class TestEgressUnifiedUi(unittest.TestCase):
 
     def test_render_egress_node_list_uses_routing_config(self):
         """renderEgressNodeList 必须根据 selectedEgressSlotId 调 /api/egress_routing_config 拿过滤配置。"""
-        mgr_path = Path(__file__).resolve().parent.parent / "vpngate_manager.py"
-        body = mgr_path.read_text(encoding="utf-8")
+        body = _SOURCE_BODY
         from tests.test_egress_ui import TestEgressPageStyleAndModal as _Cls
         fn = _Cls._extract_function_body(body, "async function renderEgressNodeList")
         self.assertTrue(fn, "renderEgressNodeList 函数必须存在")
@@ -468,8 +465,7 @@ class TestEgressUnifiedUi(unittest.TestCase):
 
     def test_connect_node_accepts_slot_id(self):
         """connectNode 必须支持 slotId 参数（用于指定切到哪个出口的节点）。"""
-        mgr_path = Path(__file__).resolve().parent.parent / "vpngate_manager.py"
-        body = mgr_path.read_text(encoding="utf-8")
+        body = _SOURCE_BODY
         from tests.test_egress_ui import TestEgressPageStyleAndModal as _Cls
         fn = _Cls._extract_function_body(body, "async function connectNode")
         self.assertTrue(fn, "connectNode 函数必须存在")
@@ -484,8 +480,7 @@ class TestEgressUnifiedUi(unittest.TestCase):
         """主页与出站管理已拆成独立 DOM 容器：
         home_egress_blocks(主页) / egress_status_blocks(出站管理) / egress_node_section(节点列表)，
         均由 switchPage 分别控制显隐，互不共享。"""
-        mgr_path = Path(__file__).resolve().parent.parent / "vpngate_manager.py"
-        body = mgr_path.read_text(encoding="utf-8")
+        body = _SOURCE_BODY
         # 三个独立容器必须存在
         self.assertIn('id="home_egress_blocks"', body, "主页必须有 home_egress_blocks 容器")
         self.assertIn('id="egress_status_blocks"', body, "出站管理必须有 egress_status_blocks 容器")
@@ -506,14 +501,12 @@ class TestEgressUnifiedUi(unittest.TestCase):
 
     def test_page_egress_no_longer_uses_egress_list_id(self):
         """page_egress 不应再用 #egress_list（已外提为 #egress_status_blocks）。"""
-        mgr_path = Path(__file__).resolve().parent.parent / "vpngate_manager.py"
-        body = mgr_path.read_text(encoding="utf-8")
+        body = _SOURCE_BODY
         self.assertNotIn('id="egress_list"', body, "page_egress 不应再有 id='egress_list' 容器")
 
     def test_no_double_json_in_loadEgress(self):
         """loadEgress 不能对 fetchWithCsrf 的结果再 .json()，否则会 TypeError 被吞导致渲染空。"""
-        mgr_path = Path(__file__).resolve().parent.parent / "vpngate_manager.py"
-        body = mgr_path.read_text(encoding="utf-8")
+        body = _SOURCE_BODY
         from tests.test_egress_ui import TestEgressPageStyleAndModal as _Cls
         fn = _Cls._extract_function_body(body, "async function loadEgress")
         # 去掉注释行
@@ -553,8 +546,7 @@ class TestHomeEgressActiveNodeCard(unittest.TestCase):
         """子出口分支走到末尾 f-string 时 res 必须已定义，否则 UnboundLocalError
         会被 set_state 翻译成 'check error: cannot access local variable \\'res\\''，
         导致非默认出口的节点字段永远显示这个错误。"""
-        mgr_path = Path(__file__).resolve().parent.parent / "vpngate_manager.py"
-        body = mgr_path.read_text(encoding="utf-8")
+        body = _SOURCE_BODY
         idx = body.find("def collector_loop")
         self.assertGreater(idx, 0)
         end = body.find("\n\n", idx)
@@ -568,15 +560,13 @@ class TestHomeEgressActiveNodeCard(unittest.TestCase):
 
     def test_render_active_node_card_for_egress_exists(self):
         """必须存在 renderActiveNodeCardForEgress 函数（按选中出口渲染顶部活动卡）。"""
-        mgr_path = Path(__file__).resolve().parent.parent / "vpngate_manager.py"
-        body = mgr_path.read_text(encoding="utf-8")
+        body = _SOURCE_BODY
         self.assertIn("function renderActiveNodeCardForEgress",
                       body, "必须存在 renderActiveNodeCardForEgress(slotKey) 函数")
 
     def test_render_active_node_card_for_egress_uses_correct_data_source(self):
         """_buildActiveNodeCardHTML 必须按 slotKey 从 statusList（默认走 state、子出口走 egressStatusList）拿数据。"""
-        mgr_path = Path(__file__).resolve().parent.parent / "vpngate_manager.py"
-        body = mgr_path.read_text(encoding="utf-8")
+        body = _SOURCE_BODY
         fn = self._extract_function_body(body, "function _buildActiveNodeCardHTML")
         self.assertGreater(len(fn), 0)
         # 应当读取传入的 statusList（调用方为 homeEgressStatusList / egressStatusList）
@@ -594,8 +584,7 @@ class TestHomeEgressActiveNodeCard(unittest.TestCase):
 
     def test_select_egress_refreshes_top_card(self):
         """selectEgressCard(slotKey) 必须同时刷新顶部活动节点卡，不能只刷卡片列表。"""
-        mgr_path = Path(__file__).resolve().parent.parent / "vpngate_manager.py"
-        body = mgr_path.read_text(encoding="utf-8")
+        body = _SOURCE_BODY
         fn = self._extract_function_body(body, "function selectEgressCard")
         self.assertGreater(len(fn), 0)
         self.assertIn("renderEgressActiveNodeCard", fn,
@@ -603,8 +592,7 @@ class TestHomeEgressActiveNodeCard(unittest.TestCase):
 
     def test_load_egress_auto_selects_default_on_first_load(self):
         """loadEgress 首次加载（selectedEgressSlotId === null）时必须自动选中默认出口。"""
-        mgr_path = Path(__file__).resolve().parent.parent / "vpngate_manager.py"
-        body = mgr_path.read_text(encoding="utf-8")
+        body = _SOURCE_BODY
         fn = self._extract_function_body(body, "async function loadEgress")
         self.assertGreater(len(fn), 0)
         self.assertIn("egressSelectedEgressSlotId === null", fn,
@@ -616,8 +604,7 @@ class TestHomeEgressActiveNodeCard(unittest.TestCase):
 
     def test_load_egress_refreshes_top_card_after_loading(self):
         """loadEgress 拉到状态后必须重新渲染顶部活动节点卡（让动态刷新生效）。"""
-        mgr_path = Path(__file__).resolve().parent.parent / "vpngate_manager.py"
-        body = mgr_path.read_text(encoding="utf-8")
+        body = _SOURCE_BODY
         fn = self._extract_function_body(body, "async function loadEgress")
         self.assertGreater(len(fn), 0)
         self.assertIn("renderEgressActiveNodeCard", fn,
@@ -625,8 +612,7 @@ class TestHomeEgressActiveNodeCard(unittest.TestCase):
 
     def test_switch_page_hides_node_list_on_home(self):
         """主页（overview）必须永久隐藏节点列表（egress_node_section 强制 none），避免与出站管理页内容重复。"""
-        mgr_path = Path(__file__).resolve().parent.parent / "vpngate_manager.py"
-        body = mgr_path.read_text(encoding="utf-8")
+        body = _SOURCE_BODY
         idx = body.find("function switchPage")
         self.assertGreater(idx, 0)
         end = body.find("\nfunction ", idx + 30)
@@ -645,8 +631,7 @@ class TestHomeEgressActiveNodeCard(unittest.TestCase):
 
     def test_render_calls_active_node_card_for_current_slot(self):
         """render() 必须调用独立的 renderHomeActiveNodeCard(homeSelectedEgressSlotId) 而非内联渲染（与出站管理页解耦）。"""
-        mgr_path = Path(__file__).resolve().parent.parent / "vpngate_manager.py"
-        body = mgr_path.read_text(encoding="utf-8")
+        body = _SOURCE_BODY
         fn = self._extract_function_body(body, "function render()")
         self.assertGreater(len(fn), 0)
         self.assertIn("renderHomeActiveNodeCard", fn,
@@ -664,8 +649,7 @@ class TestEgressRenameAndAdminTable(unittest.TestCase):
     """
 
     def _body(self):
-        mgr = Path(__file__).resolve().parent.parent / "vpngate_manager.py"
-        return mgr.read_text(encoding="utf-8")
+        return _SOURCE_BODY
 
     def test_outbound_module_renamed_to_management(self):
         """全部"出站代理"已改名为"出站管理"（菜单/页面/按钮/错误消息/注释一致）。"""
@@ -772,8 +756,7 @@ class TestEgressStuckRecovery(unittest.TestCase):
     """
 
     def _body(self):
-        mgr = Path(__file__).resolve().parent.parent / "vpngate_manager.py"
-        return mgr.read_text(encoding="utf-8")
+        return _SOURCE_BODY
 
     def test_connect_node_finally_persists_state(self):
         """connect_node 的 finally 必须显式 set_state(is_connecting=False)，
@@ -836,8 +819,7 @@ class TestEgressStuckRecovery(unittest.TestCase):
 
     def test_egress_module_card_structure(self):
         """page_egress 必须包含出站模块卡片（egress_module_card），含标题栏、计数标签、空状态提示。"""
-        mgr_path = Path(__file__).resolve().parent.parent / "vpngate_manager.py"
-        body = mgr_path.read_text(encoding="utf-8")
+        body = _SOURCE_BODY
         self.assertIn('id="egress_module_card"', body, "必须有 egress_module_card 模块容器")
         self.assertIn('id="egress_status_blocks"', body, "egress_status_blocks 必须存在于模块内")
         self.assertIn('id="egress_empty_hint"', body, "必须有空状态提示 egress_empty_hint")
@@ -865,8 +847,7 @@ class TestEgressModuleCardAndFeedback(unittest.TestCase):
 
     def test_refresh_button_has_loading_feedback(self):
         """刷新状态按钮必须调用 loadEgressWithFeedback（带加载动画/文字变化），而非直接 loadEgress。"""
-        mgr_path = Path(__file__).resolve().parent.parent / "vpngate_manager.py"
-        body = mgr_path.read_text(encoding="utf-8")
+        body = _SOURCE_BODY
         self.assertIn("loadEgressWithFeedback", body, "必须有 loadEgressWithFeedback 函数")
         self.assertIn('id="btn_refresh_egress"', body, "刷新按钮必须有 id=btn_refresh_egress")
         self.assertIn('id="refresh_egress_text"', body, "刷新按钮必须有文字元素 refresh_egress_text")
@@ -887,8 +868,7 @@ class TestEgressModuleCardAndFeedback(unittest.TestCase):
     def test_country_filter_normalizes_both_sides(self):
         """renderEgressNodeList 的国家筛选必须将 forceCountry 和 n.country 都通过 countryDict 规范化后再比对，
         避免存了代码（KR）但节点是中文名（韩国）或反之导致筛选失效。"""
-        mgr_path = Path(__file__).resolve().parent.parent / "vpngate_manager.py"
-        body = mgr_path.read_text(encoding="utf-8")
+        body = _SOURCE_BODY
         fn = self._extract_function_body(body, "function renderEgressNodeList")
         self.assertGreater(len(fn), 0)
         # 必须有 _normCountry 辅助函数（或等价的规范化逻辑）
@@ -901,8 +881,7 @@ class TestEgressModuleCardAndFeedback(unittest.TestCase):
 
     def test_renderEgressCards_updates_count_label_and_empty_hint(self):
         """renderEgressCards 必须更新模块卡片的计数标签和空状态提示。"""
-        mgr_path = Path(__file__).resolve().parent.parent / "vpngate_manager.py"
-        body = mgr_path.read_text(encoding="utf-8")
+        body = _SOURCE_BODY
         fn = self._extract_function_body(body, "function renderEgressCards")
         self.assertGreater(len(fn), 0)
         self.assertIn("egress_empty_hint", fn, "renderEgressCards 必须处理 egress_empty_hint 显示/隐藏")
@@ -912,8 +891,7 @@ class TestEgressModuleCardAndFeedback(unittest.TestCase):
 
     def test_create_modal_has_country_selector(self):
         """添加出站管理弹窗必须提供"锁定国家/地区"选择器，且 openAddEgressModal 会填充它。"""
-        mgr_path = Path(__file__).resolve().parent.parent / "vpngate_manager.py"
-        body = mgr_path.read_text(encoding="utf-8")
+        body = _SOURCE_BODY
         self.assertIn('id="add_egress_country"', body, "创建弹窗必须有 add_egress_country 选择器")
         fn = self._extract_function_body(body, "function openAddEgressModal")
         self.assertIn("add_egress_country", fn, "openAddEgressModal 必须操作 add_egress_country")
@@ -921,8 +899,7 @@ class TestEgressModuleCardAndFeedback(unittest.TestCase):
 
     def test_submitAddEgress_sends_country(self):
         """submitAddEgress 必须读取国家选择器并随请求发送 country 字段。"""
-        mgr_path = Path(__file__).resolve().parent.parent / "vpngate_manager.py"
-        body = mgr_path.read_text(encoding="utf-8")
+        body = _SOURCE_BODY
         fn = self._extract_function_body(body, "async function submitAddEgress")
         self.assertIn("add_egress_country", fn, "submitAddEgress 必须读取 add_egress_country")
         self.assertIn('country: country', fn, "submitAddEgress 必须把 country 发到后端")
@@ -931,8 +908,7 @@ class TestEgressModuleCardAndFeedback(unittest.TestCase):
         """后端 /api/egress_regions POST：当用户选定国家时，必须把 force_country 同时写进
         region 与 config（routing_mode=fixed_region），否则新建出口会在卡片/节点列表里
         被显示为"所有节点"（国家筛选丢失）。"""
-        mgr_path = Path(__file__).resolve().parent.parent / "vpngate_manager.py"
-        body = mgr_path.read_text(encoding="utf-8")
+        body = _SOURCE_BODY
         # 定位 POST 处理函数（含 slot_def = { 的那一个，而非只读的 GET 分支）
         post_idx = body.find('slot_def = {')
         self.assertGreater(post_idx, 0, "必须存在创建出口的 POST 处理逻辑")
@@ -946,16 +922,14 @@ class TestEgressModuleCardAndFeedback(unittest.TestCase):
 
     def test_toast_system_present(self):
         """必须提供非阻塞 Toast 容器与 showToast 函数，替代 alert 弹窗（避免假报错）。"""
-        mgr_path = Path(__file__).resolve().parent.parent / "vpngate_manager.py"
-        body = mgr_path.read_text(encoding="utf-8")
+        body = _SOURCE_BODY
         self.assertIn('id="toast_container"', body, "必须有 toast_container 容器")
         self.assertIn("function showToast", body, "必须有 showToast 函数")
         self.assertIn("@keyframes toastIn", body, "必须有 toastIn 入场动画")
 
     def test_connectNode_no_alert_uses_toast_and_guards_double_click(self):
         """connectNode 不得再用 alert 弹窗（假报错），改用 showToast；且必须防重复点击。"""
-        mgr_path = Path(__file__).resolve().parent.parent / "vpngate_manager.py"
-        body = mgr_path.read_text(encoding="utf-8")
+        body = _SOURCE_BODY
         fn = self._extract_function_body(body, "async function connectNode")
         self.assertGreater(len(fn), 0)
         self.assertNotIn("alert(", fn, "connectNode 不得再用 alert 弹窗（会造成假报错）")
@@ -967,8 +941,7 @@ class TestEgressModuleCardAndFeedback(unittest.TestCase):
     def test_startConnectionPolling_stabilization(self):
         """startConnectionPolling 必须做防抖（连续 2 次 is_connecting=False 才结束轮询），
         避免自动重连/重试的瞬时间隙被误判为"已结束"而闪现"连接失败"。"""
-        mgr_path = Path(__file__).resolve().parent.parent / "vpngate_manager.py"
-        body = mgr_path.read_text(encoding="utf-8")
+        body = _SOURCE_BODY
         fn = self._extract_function_body(body, "function startConnectionPolling")
         self.assertGreater(len(fn), 0)
         self.assertIn("_pollStableOffCount", fn, "startConnectionPolling 必须有防抖计数")
