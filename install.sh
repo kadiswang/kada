@@ -604,13 +604,12 @@ def uninstall_service():
             except Exception:
                 pass
         subprocess.run(["rm", "-rf", INSTALL_DIR])
-        # 先退出备用屏幕回到主屏幕，再输出卸载信息，避免清屏把过程日志清掉
-        print("\033[?1049l\033[?25h\033[0m", end="", flush=True)
         print("\nKADA 已卸载！\n")
-        sys.exit(0)
+        return True
     else:
         print("已取消卸载。")
         time.sleep(1)
+        return False
 
 def ask_restart():
     ans = input("配置已保存。是否立即重启服务生效？(Y/n): ").strip().lower()
@@ -948,6 +947,20 @@ def main():
                 # Temporarily restore normal terminal scrollback and show cursor
                 print("\033[?1049l\033[?25h", end="", flush=True)
                 print(f"正在执行: {name}...\n")
+                
+                # 卸载要直接退出菜单，不能重新进入备用屏幕，也不能等回车
+                if func is uninstall_service:
+                    try:
+                        uninstalled = func()
+                    except Exception as e:
+                        print(f"执行出错: {e}")
+                        uninstalled = False
+                    if uninstalled:
+                        break
+                    # 取消卸载，重新进入菜单
+                    print("\033[?1049h\033[?25l\033[H\033[J", end="", flush=True)
+                    need_redraw = True
+                    continue
                 
                 try:
                     func()
