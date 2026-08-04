@@ -101,8 +101,7 @@ from nodes import (
     fetch_api_text_via_proxy,
     parse_vpngate_rows, decode_config, load_blacklist, mark_blacklisted, row_to_node,
     read_nodes, cached_nodes,
-    sort_all_nodes, apply_routing_filters, filter_persist_nodes_by_ip_type,
-    normalized_country_name, country_matches,
+    sort_all_nodes, apply_routing_filters, normalized_country_name, country_matches,
     probe_priority_key, validate_node_allowed_by_routing,
     active_test_indexes, test_indexes_lock, get_free_test_index, release_test_index,
     test_config_path,
@@ -1617,18 +1616,17 @@ def maintain_valid_nodes(force: bool = False) -> str:
                         with lock:
                             final_nodes = read_nodes()
                             active_id = active_openvpn_node_id
-                            filtered = filter_persist_nodes_by_ip_type(
-                                final_nodes, ui_cfg, active_id=active_id
-                            )
+                            filtered = [
+                                n for n in final_nodes
+                                if n.get("ip_type") in ("residential", "mobile")
+                                or (active_id and n.get("id") == active_id)
+                            ]
                             if filtered:
                                 removed = len(final_nodes) - len(filtered)
                                 write_json(NODES_FILE, filtered)
                                 if removed > 0:
-                                    type_label = {"residential": "非家宽/移动", "hosting": "非机房"}.get(
-                                        ui_cfg.get("routing_ip_type", "all"), "不符合类型"
-                                    )
-                                    print(f"[节点过滤] 已清理 {removed} 个{type_label}节点，保留 {len(filtered)} 个节点", flush=True)
-                                    log_to_json("INFO", "Main", f"节点过滤: 清理 {removed} 个{type_label}节点，保留 {len(filtered)} 个")
+                                    print(f"[节点过滤] 已清理 {removed} 个非家宽/移动节点，保留 {len(filtered)} 个节点", flush=True)
+                                    log_to_json("INFO", "Main", f"节点过滤: 清理 {removed} 个非家宽/移动节点，保留 {len(filtered)} 个")
                         return message
                     is_connecting = True
 
@@ -1686,19 +1684,18 @@ def maintain_valid_nodes(force: bool = False) -> str:
 
             final_nodes = read_nodes()
             active_id = active_openvpn_node_id
-            filtered = filter_persist_nodes_by_ip_type(
-                final_nodes, ui_cfg, active_id=active_id
-            )
+            filtered = [
+                n for n in final_nodes
+                if n.get("ip_type") in ("residential", "mobile")
+                or (active_id and n.get("id") == active_id)
+            ]
             if filtered:
                 removed = len(final_nodes) - len(filtered)
                 write_json(NODES_FILE, filtered)
                 merged = filtered
                 if removed > 0:
-                    type_label = {"residential": "非家宽/移动", "hosting": "非机房"}.get(
-                        ui_cfg.get("routing_ip_type", "all"), "不符合类型"
-                    )
-                    print(f"[节点过滤] 已清理 {removed} 个{type_label}节点，保留 {len(filtered)} 个节点", flush=True)
-                    log_to_json("INFO", "Main", f"节点过滤: 清理 {removed} 个{type_label}节点，保留 {len(filtered)} 个")
+                    print(f"[节点过滤] 已清理 {removed} 个非家宽/移动节点，保留 {len(filtered)} 个节点", flush=True)
+                    log_to_json("INFO", "Main", f"节点过滤: 清理 {removed} 个非家宽/移动节点，保留 {len(filtered)} 个")
 
         valid_nodes_count = len([n for n in merged if n.get("probe_status") == "available"])
         added_count = len([c for c in candidates if str(c.get("id")) not in current_ids])
