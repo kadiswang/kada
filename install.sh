@@ -605,8 +605,9 @@ def uninstall_service():
                 pass
         subprocess.run(["rm", "-rf", INSTALL_DIR])
         print("KADA 已卸载！")
-        # 强制退出备用屏幕并恢复光标，避免卸载后终端画面残留在上方
-        print("\033[?1049l\033[?25h", end="", flush=True)
+        # 彻底恢复终端：退出备用屏幕、恢复光标、重置颜色、清屏并把光标放到底部
+        rows, _ = shutil.get_terminal_size()
+        print("\033[?1049l\033[?25h\033[0m\033[2J\033[{};1H".format(rows), end="", flush=True)
         sys.exit(0)
     else:
         print("已取消卸载。")
