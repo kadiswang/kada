@@ -122,7 +122,7 @@ UI_PORT = env_int("UI_PORT", 8790, 1, 65535)
 INVALID_BACKOFF_SECONDS = env_int("INVALID_BACKOFF_SECONDS", 30 * 60, 1)
 
 ROOT_DIR = Path(sys.executable).resolve().parent if globals().get("__compiled__") else Path(__file__).resolve().parent
-DATA_DIR = Path(os.environ["VPNGATE_DATA_DIR"]).resolve() if os.environ.get("VPNGATE_DATA_DIR") else ROOT_DIR / "vpngate_data"
+DATA_DIR = Path(os.environ.get("VPNGATE_DATA_DIR") or "").resolve() if os.environ.get("VPNGATE_DATA_DIR") else ROOT_DIR / "vpngate_data"
 CONFIG_DIR = DATA_DIR / "configs"
 NODES_FILE = DATA_DIR / "nodes.json"
 STATE_FILE = DATA_DIR / "state.json"
@@ -8154,7 +8154,12 @@ def _ensure_egress_orch(ui_cfg: dict[str, Any]) -> None:
 def main() -> None:
     ensure_dirs()
     log_to_json("INFO", "Main", "服务已启动，正在初始化...")
-    kill_existing_openvpn_processes()
+    # 子出口进程只负责自己的数据目录，禁止在这里清理 OpenVPN，否则 marker 前缀匹配
+    # 会误杀父进程（默认出口）或其他 Slot 的 OpenVPN。
+    if os.environ.get("VPNGATE_SLOT_CHILD") != "1":
+        kill_existing_openvpn_processes()
+    else:
+        print("[Slot] 子出口进程跳过全局 OpenVPN 清理，避免误杀父进程", flush=True)
     
     log_file = DATA_DIR / "vpngate.log"
     tee = Tee(str(log_file))

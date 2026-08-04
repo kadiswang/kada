@@ -37,6 +37,7 @@ class RegionProcess:
         # 端口优先使用用户在配置中显式填写的值（proxy_port），未填则自动顺延
         self.proxy_port = cfg.proxy_port if cfg.proxy_port else proxy_port
         self.proc: subprocess.Popen[str] | None = None
+        self._last_start_ts: float = 0.0
 
     @property
     def slot_id(self) -> str:
@@ -132,13 +133,21 @@ class RegionProcess:
             return
         self.data_dir.mkdir(parents=True, exist_ok=True)
         self._seed_auth()
+        # 子进程日志落到各自数据目录，便于诊断启动失败/崩溃原因
+        log_path = self.data_dir / "region.log"
+        try:
+            log_fd = open(log_path, "a", encoding="utf-8")
+        except Exception:
+            log_fd = subprocess.DEVNULL
         self.proc = subprocess.Popen(
             [sys.executable, str(MANAGER_MAIN)],
             env=self.build_env(),
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
+            stdout=log_fd,
+            stderr=subprocess.STDOUT,
             start_new_session=True,
         )
+        # 记录最后一次启动时间，便于与日志对应
+        self._last_start_ts = time.time()
 
     def stop(self) -> None:
         if self.proc is None:
@@ -186,6 +195,52 @@ class RegionProcess:
         except Exception:
             pass
         self.proc = None
+        # 清理可能脱离进程组、残留的 OpenVPN 进程（按数据目录匹配）
+        self._kill_residual_openvpn()
+
+    def _kill_residual_openvpn(self) -> None:
+        """按本 Slot 数据目录清理残留的 openvpn 进程，避免 tun/端口被占用。"""
+        if sys.platform.startswith("win"):
+            return
+        try:
+            import signal
+            proc_root = Path("/proc")
+            if not proc_root.exists():
+                return
+            marker = str(self.data_dir)
+            killed: list[int] = []
+            for proc_dir in proc_root.iterdir():
+                if not proc_dir.name.isdigit():
+                    continue
+                pid = int(proc_dir.name)
+                try:
+                    raw = (proc_dir / "cmdline").read_bytes()
+                except OSError:
+                    continue
+                if not raw:
+                    continue
+                args = [p.decode("utf-8", errors="replace") for p in raw.split(b"\0") if p]
+                cmdline = " ".join(args).lower()
+                exe = Path(args[0]).name.lower() if args else ""
+                if "openvpn" not in exe and "openvpn" not in cmdline:
+                    continue
+                if marker in cmdline:
+                    try:
+                        os.kill(pid, signal.SIGTERM)
+                        killed.append(pid)
+                    except ProcessLookupError:
+                        pass
+                    except Exception:
+                        pass
+            if killed:
+                time.sleep(0.5)
+                for pid in killed:
+                    try:
+                        os.kill(pid, signal.SIGKILL)
+                    except Exception:
+                        pass
+        except Exception:
+            pass
 
     def status(self) -> dict[str, Any]:
         return {
@@ -312,6 +367,18 @@ class SlotOrchestrator:
                 self.regions[cfg.slot_id] = rp
             elif not existing.is_alive():
                 existing.start()
+
+        # 给子进程一点启动时间，然后检查是否立即崩溃，如是则记录日志便于排查
+        time.sleep(0.3)
+        failed: list[str] = []
+        for cfg in desired:
+            if not cfg.enabled:
+                continue
+            rp = self.regions.get(cfg.slot_id)
+            if rp is not None and not rp.is_alive():
+                failed.append(cfg.slot_id)
+        if failed:
+            print(f"[sync] 以下子出口启动失败：{', '.join(failed)}，请查看对应 slot_xxx/region.log", flush=True)
 
     def status(self) -> list[dict[str, Any]]:
         return [rp.status() for rp in self.regions.values()]
