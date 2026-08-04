@@ -435,6 +435,7 @@ INDEX_HTML = r"""<!doctype html>
       --success-gradient: linear-gradient(135deg, #059669, #10b981);
       --shadow-sm: 0 1px 3px rgba(0,0,0,0.04);
       --shadow: 0 1px 4px rgba(0,0,0,0.06), 0 2px 12px rgba(0,0,0,0.04);
+      --bg-surface: #f8fafc;
     }
 
     [data-theme="dark"] {
@@ -453,6 +454,7 @@ INDEX_HTML = r"""<!doctype html>
       --warning-bg: rgba(245,158,11,0.12);
       --shadow-sm: none;
       --shadow: none;
+      --bg-surface: #1a2236;
     }
 
     [data-theme="dark"] .active-card-icon { background: #1a2236; }
@@ -1390,13 +1392,13 @@ INDEX_HTML = r"""<!doctype html>
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M20 7l-8-4-8 4m16 0l-8 4m8-4v10l-8 4m0-10L4 7m8 4v10M4 7v10l8 4"/></svg>
         节点管理
       </a>
-      <a class="nav-item" id="sidebar_refresh" href="javascript:void(0)" onclick="doRefreshNodes()">
-        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M23 4v6h-6"/><path d="M1 20v-6h6"/><path d="M3.51 9a9 9 0 0114.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0020.49 15"/></svg>
-        更新节点
-      </a>
       <a class="nav-item" id="nav_egress" href="javascript:void(0)" onclick="switchPage('egress')">
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 12h18M3 6h18M3 18h18"/><circle cx="12" cy="12" r="9"/></svg>
         出站管理
+      </a>
+      <a class="nav-item" id="sidebar_refresh" href="javascript:void(0)" onclick="doRefreshNodes()">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M23 4v6h-6"/><path d="M1 20v-6h6"/><path d="M3.51 9a9 9 0 0114.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0020.49 15"/></svg>
+        更新节点
       </a>
 
       <div class="sidebar-divider"></div>

@@ -2224,7 +2224,7 @@ class Handler(BaseHTTPRequestHandler):
                 with lock:
                     DATA_DIR.mkdir(exist_ok=True, parents=True)
                     write_json(auth_file, ui_cfg)
-                
+                invalidate_config_cache()
                 enforce_active_node_allowed_by_routing(ui_cfg, "路由设置已更新")
                 
                 restart_needed = (new_proxy_port_int != expected_proxy_port)
@@ -2272,7 +2272,7 @@ class Handler(BaseHTTPRequestHandler):
                 with lock:
                     DATA_DIR.mkdir(exist_ok=True, parents=True)
                     write_json(auth_file, ui_cfg)
-                
+                invalidate_config_cache()
                 enforce_active_node_allowed_by_routing(ui_cfg, "出站路由配置已更新")
                 
                 self.send_json({"ok": True, "message": "出站路由配置更新成功，已即时生效！"})
@@ -2604,6 +2604,7 @@ class Handler(BaseHTTPRequestHandler):
                     with lock:
                         DATA_DIR.mkdir(exist_ok=True, parents=True)
                         write_json(DATA_DIR / "ui_auth.json", ui_cfg)
+                    invalidate_config_cache()
                     enforce_active_node_allowed_by_routing(ui_cfg, "出站路由配置已更新")
                     self.send_json({"ok": True, "message": "配置已更新，已即时生效！"})
                 else:
