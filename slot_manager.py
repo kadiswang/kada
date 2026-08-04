@@ -133,6 +133,13 @@ class RegionProcess:
             return
         self.data_dir.mkdir(parents=True, exist_ok=True)
         self._seed_auth()
+        print(
+            f"[SlotOrchestrator] 启动子出口 {self.slot_id}: "
+            f"ui_port={self.ui_port}, proxy_port={self.proxy_port}, "
+            f"tun={self.cfg.tun_dev}, table={self.cfg.route_table}, fwmark={self.cfg.fwmark}, "
+            f"data_dir={self.data_dir}",
+            flush=True,
+        )
         # 子进程日志落到各自数据目录，便于诊断启动失败/崩溃原因
         log_path = self.data_dir / "region.log"
         try:
@@ -334,8 +341,9 @@ class SlotOrchestrator:
         # 将修正后的资源写回持久化配置，确保服务重启后不丢失偏移
         if tuned_slots and ui_cfg.get("slots"):
             persist_needed = False
-            for s in ui_cfg.get("slots", []):
-                for cfg in desired:
+            for idx, cfg in enumerate(desired):
+                expected_proxy_port = self._proxy_port_for(idx)
+                for s in ui_cfg.get("slots", []):
                     if str(s.get("slot_id")) == cfg.slot_id:
                         if s.get("tun_dev") != cfg.tun_dev:
                             s["tun_dev"] = cfg.tun_dev
@@ -346,13 +354,18 @@ class SlotOrchestrator:
                         if s.get("fwmark") != cfg.fwmark:
                             s["fwmark"] = cfg.fwmark
                             persist_needed = True
+                        # 保证配置里记录的 proxy_port 与实际启动端口一致，避免 UI 显示错位
+                        if s.get("proxy_port") != expected_proxy_port:
+                            s["proxy_port"] = expected_proxy_port
+                            persist_needed = True
             if persist_needed:
                 self._persist(ui_cfg)
                 print(f"[sync] 已将修正后的资源写回持久化配置", flush=True)
 
-        # 停止已移除/停用的地区
+        # 停止已移除/停用的地区（用 desired 中的最新 enabled 状态，而不是旧对象的缓存值）
+        desired_enabled = {c.slot_id: c.enabled for c in desired}
         for slot_id, rp in list(self.regions.items()):
-            if slot_id not in desired_ids or not rp.enabled:
+            if slot_id not in desired_ids or not desired_enabled.get(slot_id, False):
                 rp.stop()
                 self.regions.pop(slot_id, None)
 
@@ -361,12 +374,23 @@ class SlotOrchestrator:
             if not cfg.enabled:
                 continue
             existing = self.regions.get(cfg.slot_id)
+            new_ui_port = self._ui_port_for(idx)
+            new_proxy_port = self._proxy_port_for(idx)
             if existing is None:
-                rp = RegionProcess(cfg, self.base_data_dir, self._ui_port_for(idx), self._proxy_port_for(idx))
+                rp = RegionProcess(cfg, self.base_data_dir, new_ui_port, new_proxy_port)
                 rp.start()
                 self.regions[cfg.slot_id] = rp
             elif not existing.is_alive():
-                existing.start()
+                # 进程已死：用最新配置重建对象，避免继续使用旧 tun/route/port
+                existing.stop()
+                rp = RegionProcess(cfg, self.base_data_dir, new_ui_port, new_proxy_port)
+                rp.start()
+                self.regions[cfg.slot_id] = rp
+            else:
+                # 进程还活着：同步最新配置资源，避免删除/新增 slot 后索引偏移导致资源错位
+                existing.cfg = cfg
+                existing.proxy_port = cfg.proxy_port if cfg.proxy_port else new_proxy_port
+                existing.ui_port = new_ui_port
 
         # 给子进程一点启动时间，然后检查是否立即崩溃，如是则记录日志便于排查
         time.sleep(0.3)

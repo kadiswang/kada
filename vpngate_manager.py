@@ -1139,6 +1139,7 @@ def kill_existing_openvpn_processes() -> None:
         proc_root = Path("/proc")
         if not proc_root.exists():
             return
+        is_parent = os.environ.get("VPNGATE_SLOT_CHILD") != "1"
         for proc_dir in proc_root.iterdir():
             if not proc_dir.name.isdigit():
                 continue
@@ -1157,6 +1158,11 @@ def kill_existing_openvpn_processes() -> None:
             cmdline = " ".join(args)
             executable = Path(args[0]).name.lower()
             if "openvpn" not in executable and "openvpn" not in cmdline.lower():
+                continue
+            # 父进程清理时，必须避免误杀子出口（slot_xxx）的 OpenVPN 进程。
+            # 子进程的 OpenVPN 配置文件在 /opt/kada/vpngate_data/slot_xxx/configs/ 下，
+            # 前缀仍匹配父进程的 DATA_DIR，因此需要显式排除。
+            if is_parent and "/slot_" in cmdline:
                 continue
             if any(marker and marker in cmdline for marker in own_markers):
                 try:
@@ -1354,8 +1360,9 @@ def stop_active_openvpn() -> None:
         if active_openvpn_node_id:
             nodes = read_nodes()
             node = next((item for item in nodes if item.get("id") == active_openvpn_node_id), None)
-            if node:
-                config_to_delete = node.get("config_file")
+            if node and node.get("config_file"):
+                # 多 Slot：config_file 来自共享池，需映射到本进程自己的 CONFIG_DIR
+                config_to_delete = str(CONFIG_DIR / Path(node["config_file"]).name)
                 
         stop_process(active_openvpn_process)
         active_openvpn_process = None
@@ -1848,7 +1855,10 @@ def connect_node(node_id: str) -> str:
         stopped_existing = True
 
         set_state(active_node_latency="写入配置", last_check_message="正在写入 OpenVPN 节点配置文件...")
-        config_path = Path(node["config_file"])
+        # 多 Slot：config_file 来自共享节点池，是绝对路径（父进程的 CONFIG_DIR）。
+        # 子进程必须把它映射到本进程自己的 CONFIG_DIR，否则所有子出口会往父目录写同一个文件，
+        # 父进程清理时还会按前缀匹配误杀子 OpenVPN。
+        config_path = CONFIG_DIR / Path(node["config_file"]).name
         try:
             CONFIG_DIR.mkdir(exist_ok=True, parents=True)
             config_path.write_text(node.get("config_text") or "", encoding="utf-8")
@@ -1856,7 +1866,7 @@ def connect_node(node_id: str) -> str:
             raise RuntimeError(f"Failed to write configuration: {e}") from e
 
         set_state(active_node_latency="启动核心", last_check_message="正在启动 OpenVPN Core 核心服务并建立连接...")
-        ok, message, process = run_openvpn_until_ready(str(node["config_file"]), keep_alive=True, route_nopull=True, dev=slot_tun_dev)
+        ok, message, process = run_openvpn_until_ready(str(config_path), keep_alive=True, route_nopull=True, dev=slot_tun_dev)
         if not ok or process is None:
             try:
                 if config_path.exists():
@@ -2046,7 +2056,8 @@ def maintain_valid_nodes(force: bool = False) -> str:
                 merged = merged[:1000]
                 
             for n in merged:
-                config_path = Path(n["config_file"])
+                # 多 Slot：共享池里的 config_file 是父进程路径，写入时映射到本进程 CONFIG_DIR
+                config_path = CONFIG_DIR / Path(n["config_file"]).name
                 if not config_path.exists():
                     try:
                         config_path.write_text(n["config_text"], encoding="utf-8")
@@ -5321,17 +5332,20 @@ function _buildEgressCardHTML(e, mode) {
       : "<span style='color:var(--text-muted);font-size:12px;'>未连接</span>");
 
   // 操作按钮（仅出站管理页显示，主页不显示）
+  // 未启动的出口也要能删除，否则子进程起不来时用户删不掉。
   let actionsHtml = "";
-  if (mode !== "home" && !isDown) {
-    actionsHtml =
-      "<button class='btn-danger' style='height:28px;padding:0 10px;border-radius:6px;font-size:12px;display:inline-flex;align-items:center;gap:4px;flex-shrink:0;' onclick=\"event.stopPropagation();disconnectEgress('" + escAttr(e.slot_id) + "')\">" +
-        "<svg viewBox='0 0 24 24' fill='none' stroke='currentColor' stroke-width='2' style='width:12px;height:12px;'><path d='M10 14l2-2m0 0l2-2m-2 2l-2-2m2 2l2 2m7-2a9 9 0 11-18 0 9 9 0 0118 0z'/></svg>断开" +
-      "</button>" +
-      (!isDefault
-        ? "<button class='btn-ghost' style='height:28px;padding:0 8px;border-radius:6px;font-size:12px;margin-left:6px;display:inline-flex;align-items:center;gap:4px;flex-shrink:0;' onclick=\"event.stopPropagation();delEgress('" + escAttr(e.slot_id) + "')\">" +
-            "<svg viewBox='0 0 24 24' fill='none' stroke='currentColor' stroke-width='2' style='width:12px;height:12px;'><path d='M3 6h18M8 6V4a2 2 0 012-2h4a2 2 0 012 2v2m3 0v14a2 2 0 01-2 2H7a2 2 0 01-2-2V6h14z'/></svg>删除" +
-          "</button>"
-        : "");
+  if (mode !== "home") {
+    const disconnectBtn = !isDown
+      ? "<button class='btn-danger' style='height:28px;padding:0 10px;border-radius:6px;font-size:12px;display:inline-flex;align-items:center;gap:4px;flex-shrink:0;' onclick=\"event.stopPropagation();disconnectEgress('" + escAttr(e.slot_id) + "')\">" +
+          "<svg viewBox='0 0 24 24' fill='none' stroke='currentColor' stroke-width='2' style='width:12px;height:12px;'><path d='M10 14l2-2m0 0l2-2m-2 2l-2-2m2 2l2 2m7-2a9 9 0 11-18 0 9 9 0 0118 0z'/></svg>断开" +
+        "</button>"
+      : "";
+    const deleteBtn = !isDefault
+      ? "<button class='btn-ghost' style='height:28px;padding:0 8px;border-radius:6px;font-size:12px;margin-left:6px;display:inline-flex;align-items:center;gap:4px;flex-shrink:0;' onclick=\"event.stopPropagation();delEgress('" + escAttr(e.slot_id) + "')\">" +
+          "<svg viewBox='0 0 24 24' fill='none' stroke='currentColor' stroke-width='2' style='width:12px;height:12px;'><path d='M3 6h18M8 6V4a2 2 0 012-2h4a2 2 0 012 2v2m3 0v14a2 2 0 01-2 2H7a2 2 0 01-2-2V6h14z'/></svg>删除" +
+        "</button>"
+      : "";
+    actionsHtml = disconnectBtn + deleteBtn;
   }
 
   const selectedBg = isSelected ? "background: rgba(99,102,241,0.06); border-color: rgba(99,102,241,0.25);" : "";
@@ -8243,7 +8257,16 @@ def main() -> None:
     if os.environ.get("VPNGATE_DISABLE_AUTH") == "1":
         ui_host = "127.0.0.1"  # 本地面板内的子进程仅绑定本地，避免暴露
     ui_port = bounded_int(ui_cfg.get("port"), UI_PORT, 1, 65535)
-    
+
+    if os.environ.get("VPNGATE_SLOT_CHILD") == "1":
+        print(
+            f"[Slot] 子出口进程启动: DATA_DIR={DATA_DIR}, UI_PORT={ui_port}, "
+            f"LOCAL_PROXY_PORT={LOCAL_PROXY_PORT}, LOCAL_PROXY_HOST={LOCAL_PROXY_HOST}, "
+            f"tun_dev={ui_cfg.get('tun_dev')}, route_table={ui_cfg.get('route_table')}, "
+            f"fwmark={ui_cfg.get('fwmark')}",
+            flush=True,
+        )
+
     print(f"UI: http://{ui_host}:{ui_port}/", flush=True)
     print(f"Proxy: http://{LOCAL_PROXY_HOST}:{LOCAL_PROXY_PORT}", flush=True)
     log_to_json("INFO", "Main", f"UI服务已启动: http://{ui_host}:{ui_port}/")
