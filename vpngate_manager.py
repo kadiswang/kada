@@ -1562,6 +1562,17 @@ def maintain_valid_nodes(force: bool = False) -> str:
                         
             write_json(NODES_FILE, merged)
 
+            # 节点已经合并写入，立即通知前端关闭"正在更新"遮罩。
+            # 否则 last_refresh_at 要等下方全量连通性测试跑完才置位，
+            # 节点明明已刷新、遮罩却长期不消失（用户感知为"一直更新"）。
+            added_count = len([c for c in candidates if str(c.get("id")) not in current_ids])
+            set_state(
+                last_refresh_at=time.time(),
+                last_fetch_added=added_count,
+                last_node_total=len(merged),
+                last_fetch_status="ok",
+            )
+
         initial_tested_ids: set[str] = set()
         ui_cfg = load_ui_config()
         should_fast_connect = (
