@@ -605,6 +605,8 @@ def uninstall_service():
                 pass
         subprocess.run(["rm", "-rf", INSTALL_DIR])
         print("KADA 已卸载！")
+        # 强制退出备用屏幕并恢复光标，避免卸载后终端画面残留在上方
+        print("\033[?1049l\033[?25h", end="", flush=True)
         sys.exit(0)
     else:
         print("已取消卸载。")
