@@ -8070,23 +8070,49 @@ def _get_egress_routing_config(slot_id: str) -> dict[str, Any]:
 
 
 def aggregate_egress_status() -> list[dict[str, Any]]:
-    """汇总所有出站管理状态：默认 7928 + 各子出口。"""
+    """汇总所有出站管理状态：默认 7928 + 各子出口。
+
+    修复(出站管理无法添加)：列表以持久化配置(ui_cfg.slots)为准，保证"已配置的
+    出口一定出现在列表"，不再依赖编排器(EGRESS_ORCH)是否存活 / 已同步。
+
+    旧逻辑只在 EGRESS_ORCH 不为 None 时才列出子出口，导致首次添加出口、或编排器
+    启动 / 同步失败时，新增的出站只写进了 ui_auth.json，却永远不出现在界面上
+    （表现为"不能添加出站管理"）。
+
+    现在：alive 通过探测代理端口得到（与 _build_egress_regions 一致）；若编排器在线，
+    再叠加各子出口的详细状态。这样即使编排器没起来，新建出口也会显示（标红=未连接），
+    用户至少能看到并管理它。
+    """
     result: list[dict[str, Any]] = [{
         "slot_id": "__default__",
         "is_default": True,
         "name": "默认出口",
         **get_instance_egress_status(),
     }]
+    ui_cfg = _cached_load_ui_config()
     orch = globals().get("EGRESS_ORCH")
+    orch_map: dict[str, Any] = {}
     if orch is not None:
         for rp in orch.regions.values():
-            entry: dict[str, Any] = {
-                "slot_id": rp.cfg.slot_id,
-                "is_default": False,
-                "name": rp.cfg.slot_id,
-                "proxy_port": rp.proxy_port,
-                "alive": False,
-            }
+            orch_map[str(rp.cfg.slot_id)] = rp
+    for s in (ui_cfg.get("slots") or []):
+        slot_id = str(s.get("slot_id") or "")
+        try:
+            port = int(s.get("proxy_port") or 0)
+        except (TypeError, ValueError):
+            port = 0
+        if not slot_id or not port:
+            continue
+        entry: dict[str, Any] = {
+            "slot_id": slot_id,
+            "is_default": False,
+            "name": str(s.get("name") or slot_id),
+            "proxy_port": port,
+            # 以配置为准：即便编排器未启动，也能正确显示该出口（标红=未连接）
+            "alive": _quick_proxy_listen(port),
+        }
+        rp = orch_map.get(slot_id)
+        if rp is not None:
             try:
                 with urllib.request.urlopen(
                     urllib.request.Request(f"http://127.0.0.1:{rp.ui_port}/api/egress_status", method="GET"),
@@ -8095,7 +8121,7 @@ def aggregate_egress_status() -> list[dict[str, Any]]:
                     entry.update(json.loads(r.read().decode("utf-8")))
             except Exception:
                 pass
-            result.append(entry)
+        result.append(entry)
     return result
 
 
