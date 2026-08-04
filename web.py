@@ -1470,7 +1470,7 @@ INDEX_HTML = r"""<!doctype html>
       <!-- 主页专用：按主页选中出口渲染当前活动节点卡。 -->
     </section>
     <!-- 主页：出口实例概览（紧凑模式，点击可切换查看详情，不含路由配置和操作按钮） -->
-    <section id="home_egress_module" style="background: var(--bg-surface, #f8fafc); border: 1px solid var(--border-color, #e2e8f0); border-radius: 12px; padding: 16px 20px; margin-bottom: 24px;">
+    <section id="home_egress_module" style="background: var(--surface, #ffffff); border: 1px solid var(--border-color, #e2e8f0); border-radius: 12px; padding: 16px 20px; margin-bottom: 24px;">
       <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:12px;">
         <div style="display:flex;align-items:center;gap:8px;">
           <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2" style="width:16px;height:16px;color:var(--text-muted);"><path stroke-linecap="round" stroke-linejoin="round" d="M13 10V3L4 14h7v7l9-11h-7z"/></svg>
@@ -1963,7 +1963,7 @@ INDEX_HTML = r"""<!doctype html>
     <!-- 出站管理专用：顶部活动节点卡（按出站管理页选中出口渲染，与主页独立） -->
     <section class="active-node-section" id="egress_active_node_card" style="margin-bottom: 24px;"></section>
     <!-- 出站模块：出口实例卡片区（与主页"出口实例"模块视觉完全一致：铺满 + 扁平标题 + 8px 间距） -->
-    <div id="egress_module_card" style="background: var(--bg-surface, #f8fafc); border: 1px solid var(--border-color, #e2e8f0); border-radius: 12px; padding: 16px 20px; margin-bottom: 24px; box-shadow: var(--shadow-sm);">
+    <div id="egress_module_card" style="background: var(--surface, #ffffff); border: 1px solid var(--border-color, #e2e8f0); border-radius: 12px; padding: 16px 20px; margin-bottom: 24px; box-shadow: var(--shadow-sm);">
       <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:12px;">
         <div style="display:flex;align-items:center;gap:8px;">
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="width:16px;height:16px;color:var(--text-muted);"><path stroke-linecap="round" stroke-linejoin="round" d="M13 10V3L4 14h7v7l9-11h-7z"/></svg>
@@ -2283,7 +2283,7 @@ function _buildActiveNodeCardHTML(slotKey, statusList) {
 
   // 未连接
   return `
-    <div class="active-card" style="background: var(--bg-surface); border-color: var(--border-color); box-shadow: none;">
+    <div class="active-card" style="background: var(--surface); border-color: var(--border-color); box-shadow: none;">
       <div class="active-card-info">
         <div class="stat-icon-wrapper" style="background: rgba(244, 63, 94, 0.1); border-color: rgba(244, 63, 94, 0.2); width: 48px; height: 48px; border-radius: 12px;">
           <svg xmlns="http://www.w3.org/2000/svg" class="stat-icon" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2.5" style="color: var(--danger); width: 24px; height: 24px;"><path stroke-linecap="round" stroke-linejoin="round" d="M18.364 18.364A9 9 0 005.636 5.636m12.728 12.728A9 9 0 015.636 5.636m12.728 12.728L5.636 5.636" /></svg>
@@ -3173,7 +3173,7 @@ function _buildEgressCardHTML(e, mode) {
   const selectedBg = isSelected ? "background: rgba(99,102,241,0.06); border-color: rgba(99,102,241,0.25);" : "";
   const selectHandler = mode === "home" ? "selectHomeEgressCard" : "selectEgressCard";
 
-  return "<div style='display:flex;align-items:center;gap:12px;padding:10px 14px;border-radius:10px;border:1px solid var(--border-color,#e2e8f0);background:var(--bg-surface,#f8fafc);cursor:pointer;transition:all 0.15s;" + selectedBg + "' onclick=\"" + selectHandler + "('" + escAttr(slotKey) + "')\">" +
+  return "<div style='display:flex;align-items:center;gap:12px;padding:10px 14px;border-radius:10px;border:1px solid var(--border-color,#e2e8f0);background:var(--surface,#ffffff);cursor:pointer;transition:all 0.15s;" + selectedBg + "' onclick=\"" + selectHandler + "('" + escAttr(slotKey) + "')\">" +
     // 左侧图标（与主页一致：32px 圆角方块）
     "<div style='width:32px;height:32px;border-radius:8px;display:flex;align-items:center;justify-content:center;flex-shrink:0;" +
       (isDown ? "background:rgba(148,163,184,0.12);" : (isDefault ? "background:rgba(16,185,129,0.12);" : "background:rgba(99,102,241,0.12);")) + ">" +
@@ -3247,7 +3247,7 @@ function _buildHomeEgressSummaryHTML(e) {
       ? "<span style='color:var(--text-muted);font-size:12px;'>" + escAttr(e.last_check_message) + "</span>"
       : "<span style='color:var(--text-muted);font-size:12px;'>未连接</span>");
   const selectedBg = isSelected ? "background: rgba(99,102,241,0.06); border-color: rgba(99,102,241,0.25);" : "";
-  return "<div style='display:flex;align-items:center;gap:12px;padding:10px 14px;border-radius:10px;border:1px solid var(--border-color,#e2e8f0);background:var(--bg-surface,#f8fafc);cursor:pointer;transition:all 0.15s;" + selectedBg + "' onclick=\"selectHomeEgressCard('" + escAttr(slotKey) + "')\">" +
+  return "<div style='display:flex;align-items:center;gap:12px;padding:10px 14px;border-radius:10px;border:1px solid var(--border-color,#e2e8f0);background:var(--surface,#ffffff);cursor:pointer;transition:all 0.15s;" + selectedBg + "' onclick=\"selectHomeEgressCard('" + escAttr(slotKey) + "')\">" +
     // 左侧图标
     "<div style='width:32px;height:32px;border-radius:8px;display:flex;align-items:center;justify-content:center;flex-shrink:0;" +
       (isDown ? "background:rgba(148,163,184,0.12);" : (isDefault ? "background:rgba(16,185,129,0.12);" : "background:rgba(99,102,241,0.12);")) + ">" +
