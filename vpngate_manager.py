@@ -165,6 +165,11 @@ server_start_time = time.time()
 # 多地区编排器实例（由 main() 在配置了 slots 时创建，供 Web API 查询/管理各地区子进程）
 EGRESS_ORCH: Any | None = None
 
+# 当前进程（含子出口进程）专属的路由资源，由 connect_node 写入，供 stop_active_openvpn
+# 在拆隧道时按"本进程自己的路由表"清理，避免误清父进程（默认出口）的 table 100。
+SLOT_ROUTE_TABLE: int = 0
+SLOT_FWMARK: int = 0
+
 _nodes_cache: list[dict[str, Any]] | None = None
 _nodes_cache_time = 0.0
 _NODES_CACHE_TTL = NODE_CACHE_TTL
@@ -1355,7 +1360,9 @@ def cleanup_policy_routing(table: int = 100, fwmark: int = 0) -> None:
 def stop_active_openvpn() -> None:
     global active_openvpn_process, active_openvpn_node_id
     with lock:
-        cleanup_policy_routing()
+        # 按本进程自己的路由表清理（子出口清 101/102…，父进程清 100），
+        # 避免子出口拆隧道时误清父进程（默认出口）的 table 100 导致父出口断流。
+        cleanup_policy_routing(SLOT_ROUTE_TABLE if SLOT_ROUTE_TABLE else 100, SLOT_FWMARK if SLOT_FWMARK else 0)
         config_to_delete = None
         if active_openvpn_node_id:
             nodes = read_nodes()
@@ -1835,6 +1842,10 @@ def connect_node(node_id: str) -> str:
         slot_tun_dev = str(ui_cfg.get("tun_dev") or "tun0")
         slot_route_table = int(ui_cfg.get("route_table") or 100)
         slot_fwmark = int(ui_cfg.get("fwmark") or 0)
+        # 暴露为本进程级全局，供 stop_active_openvpn 按本进程自己的路由表清理（而非误清父进程的 table 100）
+        global SLOT_ROUTE_TABLE, SLOT_FWMARK
+        SLOT_ROUTE_TABLE = slot_route_table
+        SLOT_FWMARK = slot_fwmark
         # ── 子进程安全防线：禁止使用 tun0（已被父进程/默认出口占用）──
         if os.environ.get("VPNGATE_SLOT_CHILD") == "1" and slot_tun_dev == "tun0":
             raise RuntimeError(

@@ -95,14 +95,16 @@ class SlotManager:
         self.base_route_table = base_route_table
 
     def normalize(self, raw_slots: list[dict[str, Any]], default_proxy_port: int | None = None) -> list[SlotConfig]:
-        """把原始 slot 字典列表规范化为 SlotConfig，自动分配缺失资源并校验冲突。
+        """把原始 slot 字典列表规范化为 SlotConfig。
 
-        idx 从 0 开始：
-          tun_dev    = f"tun{idx}"
-          route_table= BASE_ROUTE_TABLE + idx
-          fwmark     = idx（单 Slot 时 idx=0 → fwmark=0，保持现状）
-          proxy_port = (default_proxy_port or BASE_PROXY_PORT) + idx
-        调用方显式给出的值优先；若显式值与其它 Slot 冲突则抛出 ValueError。
+        **重要**：tun/路由表/fwmark/代理端口等"地区资源"不再在此按列表索引（idx）分配——
+        索引分配会在增删出口时导致编号漂移、多个出口抢占同一 tun 设备（表现为
+        "只有第一个新建出口能用，后续未启动/冲突"）。
+
+        已持久化在配置里的资源值直接沿用；缺失的资源一律留空（0 / -1 / ""），
+        交由 SlotOrchestrator.sync() 按"稳定编号"统一分配并写回配置，保证：
+        1）每个出口的资源一旦分配就被锁死，增删其它出口不会抢占它；
+        2）新出口取"下一个空闲编号"，天然互不冲突。
         """
         base_port = default_proxy_port if default_proxy_port is not None else self.base_proxy_port
         configs: list[SlotConfig] = []
@@ -116,10 +118,12 @@ class SlotManager:
                 slot_id=str(raw.get("slot_id") or f"slot_{idx + 1}"),
                 region=str(raw.get("region") or ""),
                 enabled=bool(raw.get("enabled", True)),
-                proxy_port=int(explicit_port) if explicit_port else base_port + idx,
-                tun_dev=str(raw.get("tun_dev") or f"{DEFAULT_TUN_PREFIX}{idx}"),
-                route_table=int(explicit_table) if explicit_table else self.base_route_table + idx,
-                fwmark=int(explicit_fwmark) if explicit_fwmark >= 0 else idx,
+                # 代理端口：显式值优先，否则留 0 由编排器分配（避免按 idx 抢端口）
+                proxy_port=int(explicit_port) if explicit_port else 0,
+                # 地区资源：缺失一律留空，由编排器稳定分配
+                tun_dev=str(raw.get("tun_dev") or ""),
+                route_table=int(explicit_table) if explicit_table else 0,
+                fwmark=int(explicit_fwmark) if explicit_fwmark >= 0 else -1,
                 min_health_score=int(raw.get("min_health_score") or 0),
                 fixed_node_id=str(raw.get("fixed_node_id") or ""),
                 config=dict(raw.get("config") or {}),
@@ -131,13 +135,27 @@ class SlotManager:
 
     @staticmethod
     def _assert_no_conflict(configs: list[SlotConfig]) -> None:
+        # 注意：这里**不**抛异常。历史/坏配置里可能出现重复资源（例如旧版本把两个
+        # 出口都分配成 tun1），这种情况应交由 SlotOrchestrator.sync() 检测并自动重分配，
+        # 而不是在加载配置阶段就拒绝加载（否则坏配置永远无法被自愈）。
+        # 仅打印告警，便于排查。
         for attr in ("proxy_port", "tun_dev", "route_table", "fwmark"):
             seen: dict[Any, str] = {}
             for cfg in configs:
                 val = getattr(cfg, attr)
+                if attr == "proxy_port" and val == 0:
+                    continue
+                if attr == "tun_dev" and val == "":
+                    continue
+                if attr == "route_table" and val == 0:
+                    continue
+                if attr == "fwmark" and val == -1:
+                    continue
                 if val in seen:
-                    raise ValueError(
-                        f"Slot 资源冲突：{attr}={val!r} 同时被 slot '{seen[val]}' 与 slot '{cfg.slot_id}' 占用"
+                    print(
+                        f"[SlotManager] 警告：资源冲突 {attr}={val!r} 同时被 "
+                        f"'{seen[val]}' 与 '{cfg.slot_id}' 占用，将交由编排器自动重分配",
+                        flush=True,
                     )
                 seen[val] = cfg.slot_id
 

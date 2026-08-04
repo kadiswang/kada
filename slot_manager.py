@@ -14,6 +14,7 @@ KADA 多地区编排器（阶段 2/3：路由与代理隔离 + 多 Slot 并发�
 from __future__ import annotations
 
 import os
+import re
 import signal
 import subprocess
 import sys
@@ -25,6 +26,21 @@ from typing import Any
 from slots import SlotManager
 
 MANAGER_MAIN = Path(__file__).resolve().parent / "vpngate_manager.py"
+
+
+def _slot_index(tun_dev: str | None) -> int | None:
+    """从 tun 设备名解析序号，如 'tun2' -> 2；非标准名或空返回 None。"""
+    if not isinstance(tun_dev, str) or not tun_dev:
+        return None
+    m = re.match(r"^tun(\d+)$", tun_dev)
+    return int(m.group(1)) if m else None
+
+
+def _assign_index(cfg: Any, n: int) -> None:
+    """把第 n 个出口的资源稳定绑定到 cfg：tun{n} / table{100+n} / fwmark{n}。"""
+    cfg.tun_dev = f"tun{n}"
+    cfg.route_table = 100 + n
+    cfg.fwmark = n
 
 
 class RegionProcess:
@@ -272,6 +288,8 @@ class SlotOrchestrator:
         self.regions: dict[str, RegionProcess] = {}
         self._manager = SlotManager()
         self._publisher_started = False
+        self._watchdog_started = False
+        self._last_ui_cfg: dict[str, Any] | None = None
 
     def _ui_port_for(self, idx: int) -> int:
         # 管理界面端口：基础端口 + 地区索引 + 100（避开 8790 附近的默认端口冲突）
@@ -308,59 +326,63 @@ class SlotOrchestrator:
     def sync(self, ui_cfg: dict[str, Any]) -> None:
         """让运行中的子进程与 ui_cfg.slots 保持一致：新增/停止/保留。"""
         self._ensure_publisher()
+        self._ensure_watchdog()
         desired = self._manager.from_ui_config(ui_cfg)
+        self._last_ui_cfg = ui_cfg
         desired_ids = {c.slot_id for c in desired}
 
-        # 关键修复：子出口的所有资源必须避开父进程（默认出口）。
-        # slots.py normalize() 从 idx=0 开始分配 tun0/table100/fwmark0/...，
-        # 但父进程已用 tun0/table100/fwmark0，所以子出口需要整体 +1 偏移：
-        # 第一个子出口用 tun1/table101/fwmark1，第二个用 tun2/table102/fwmark2，以此类推。
-        tuned_slots = []
-        for ci, cfg in enumerate(desired):
-            # tun_dev 偏移 +1
-            expected_tun = f"tun{ci + 1}"
-            if cfg.tun_dev != expected_tun:
-                old_tun = cfg.tun_dev
-                cfg.tun_dev = expected_tun
-                tuned_slots.append(f"{cfg.slot_id}: tun {old_tun}->{cfg.tun_dev}")
-            # route_table 偏移 +1
-            expected_table = self._manager.base_route_table + ci + 1
-            if cfg.route_table != expected_table:
-                old_table = cfg.route_table
-                cfg.route_table = expected_table
-                tuned_slots.append(f"{cfg.slot_id}: table {old_table}->{cfg.route_table}")
-            # fwmark 偏移 +1
-            expected_fwmark = ci + 1
-            if cfg.fwmark != expected_fwmark:
-                old_fwmark = cfg.fwmark
-                cfg.fwmark = expected_fwmark
-                tuned_slots.append(f"{cfg.slot_id}: fwmark {old_fwmark}->{cfg.fwmark}")
-        if tuned_slots:
-            print(f"[sync] 资源偏移（避开父进程）：{', '.join(tuned_slots)}", flush=True)
+        # ===== 稳定资源分配（关键修复）=====
+        # 已分配 tun/table/fwmark 的出口保持不变；仅给缺失的出口分配下一个空闲编号。
+        # 不再按列表顺序（idx）重排，避免增删出口时编号漂移、多个出口抢占同一
+        # tun 设备/路由表（之前表现为"只有第一个新建出口能用，后续未启动/冲突"）。
+        # 编号 n 与资源绑定固定：tun{n} / table{100+n} / fwmark{n}。
+        used_idx = set()
+        for c in desired:
+            n = _slot_index(c.tun_dev)
+            if n is not None and c.route_table == 100 + n and c.fwmark == n:
+                used_idx.add(n)
+        next_idx = 1
+        for c in desired:
+            n = _slot_index(c.tun_dev)
+            fully = n is not None and c.route_table == 100 + n and c.fwmark == n and c.proxy_port
+            if fully and n not in used_idx:
+                # 完整分配且无冲突：保持稳定，不重新编号（避免增删其它出口时漂移）
+                used_idx.add(n)
+                continue
+            # 未分配、或编号与已有出口冲突（旧版本可能留下重复 tun）：重新分配下一个空闲编号
+            while next_idx in used_idx:
+                next_idx += 1
+            _assign_index(c, next_idx)
+            if not c.proxy_port:
+                c.proxy_port = self.base_proxy_port + next_idx
+            used_idx.add(next_idx)
+            next_idx += 1
+            print(
+                f"[sync] 为 {c.slot_id} 分配资源: tun{c.fwmark}/table{c.route_table}/"
+                f"fwmark{c.fwmark}/proxy{c.proxy_port}",
+                flush=True,
+            )
 
-        # 将修正后的资源写回持久化配置，确保服务重启后不丢失偏移
-        if tuned_slots and ui_cfg.get("slots"):
+        # 将分配后的资源写回持久化配置，确保服务重启后不丢失（各出口编号保持稳定）
+        if ui_cfg.get("slots"):
             persist_needed = False
-            for idx, cfg in enumerate(desired):
-                expected_proxy_port = self._proxy_port_for(idx)
+            for c in desired:
                 for s in ui_cfg.get("slots", []):
-                    if str(s.get("slot_id")) == cfg.slot_id:
-                        if s.get("tun_dev") != cfg.tun_dev:
-                            s["tun_dev"] = cfg.tun_dev
-                            persist_needed = True
-                        if s.get("route_table") != cfg.route_table:
-                            s["route_table"] = cfg.route_table
-                            persist_needed = True
-                        if s.get("fwmark") != cfg.fwmark:
-                            s["fwmark"] = cfg.fwmark
-                            persist_needed = True
-                        # 保证配置里记录的 proxy_port 与实际启动端口一致，避免 UI 显示错位
-                        if s.get("proxy_port") != expected_proxy_port:
-                            s["proxy_port"] = expected_proxy_port
+                    if str(s.get("slot_id")) == c.slot_id:
+                        if (
+                            s.get("tun_dev") != c.tun_dev
+                            or s.get("route_table") != c.route_table
+                            or s.get("fwmark") != c.fwmark
+                            or s.get("proxy_port") != c.proxy_port
+                        ):
+                            s["tun_dev"] = c.tun_dev
+                            s["route_table"] = c.route_table
+                            s["fwmark"] = c.fwmark
+                            s["proxy_port"] = c.proxy_port
                             persist_needed = True
             if persist_needed:
                 self._persist(ui_cfg)
-                print(f"[sync] 已将修正后的资源写回持久化配置", flush=True)
+                print("[sync] 已将分配后的资源写回持久化配置", flush=True)
 
         # 停止已移除/停用的地区（用 desired 中的最新 enabled 状态，而不是旧对象的缓存值）
         desired_enabled = {c.slot_id: c.enabled for c in desired}
@@ -375,7 +397,7 @@ class SlotOrchestrator:
                 continue
             existing = self.regions.get(cfg.slot_id)
             new_ui_port = self._ui_port_for(idx)
-            new_proxy_port = self._proxy_port_for(idx)
+            new_proxy_port = cfg.proxy_port if cfg.proxy_port else self._proxy_port_for(idx)
             if existing is None:
                 rp = RegionProcess(cfg, self.base_data_dir, new_ui_port, new_proxy_port)
                 rp.start()
@@ -387,9 +409,9 @@ class SlotOrchestrator:
                 rp.start()
                 self.regions[cfg.slot_id] = rp
             else:
-                # 进程还活着：同步最新配置资源，避免删除/新增 slot 后索引偏移导致资源错位
+                # 进程还活着：同步最新配置资源，避免删除/新增 slot 后资源错位
                 existing.cfg = cfg
-                existing.proxy_port = cfg.proxy_port if cfg.proxy_port else new_proxy_port
+                existing.proxy_port = new_proxy_port
                 existing.ui_port = new_ui_port
 
         # 给子进程一点启动时间，然后检查是否立即崩溃，如是则记录日志便于排查
@@ -406,6 +428,27 @@ class SlotOrchestrator:
 
     def status(self) -> list[dict[str, Any]]:
         return [rp.status() for rp in self.regions.values()]
+
+    def _ensure_watchdog(self) -> None:
+        """启动看门狗线程（只启动一次）：周期性按最新配置自检，自动拉起崩溃/退出的子出口。"""
+        if self._watchdog_started:
+            return
+        self._watchdog_started = True
+        threading.Thread(target=self._watchdog_loop, daemon=True).start()
+
+    def _watchdog_loop(self) -> None:
+        """看门狗主循环：每 15 秒用最近一次配置做一次 sync。
+
+        sync() 本身具备"存活进程原地保活、已死进程自动重启、资源稳定不漂移"的特性，
+        因此即便某个出口的子进程意外退出，也会在 15 秒内被自动拉起，杜绝长期"未启动"。
+        """
+        while True:
+            time.sleep(15)
+            try:
+                if self._last_ui_cfg is not None:
+                    self.sync(self._last_ui_cfg)
+            except Exception as exc:
+                print(f"[watchdog] 自检异常: {exc}", flush=True)
 
     def stop_all(self) -> None:
         for rp in self.regions.values():
