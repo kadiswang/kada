@@ -5013,6 +5013,55 @@ async function toggleFavorite(id, event) {
 let pollInterval = null;
 let _pollStableOffCount = 0;
 
+// ── 切换节点过渡遮罩：点击切换后立即显示"正在切换"，后台真正连上新 IP 才消失 ──
+let switchTargetId = null;
+let switchOverlayMinShow = 0;
+
+function showSwitchOverlay(id) {
+  switchTargetId = id;
+  switchOverlayMinShow = Date.now() + 1000; // 至少显示 1 秒，保证"切换过程"可见
+  let el = document.getElementById("switchOverlay");
+  if (!el) {
+    // 注入一次 spinner 动画
+    if (!document.getElementById("switchSpinnerStyle")) {
+      const s = document.createElement("style");
+      s.id = "switchSpinnerStyle";
+      s.textContent = ".switch-spinner{width:20px;height:20px;border:3px solid #cbd5e1;border-top-color:#3b82f6;border-radius:50%;display:inline-block;animation:switchspin .8s linear infinite}@keyframes switchspin{to{transform:rotate(360deg)}}";
+      document.head.appendChild(s);
+    }
+    el = document.createElement("div");
+    el.id = "switchOverlay";
+    el.style.cssText = "position:fixed;inset:0;display:flex;align-items:center;justify-content:center;background:rgba(0,0,0,0.45);z-index:9999;";
+    el.innerHTML = '<div style="background:var(--bg,#fff);color:var(--text,#222);padding:22px 30px;border-radius:12px;box-shadow:0 8px 30px rgba(0,0,0,.3);display:flex;align-items:center;gap:14px;font-size:15px;">'
+      + '<span class="switch-spinner"></span>'
+      + '<span id="switchOverlayText">正在切换节点，请稍候…</span>'
+      + '</div>';
+    document.body.appendChild(el);
+  }
+  el.style.display = "flex";
+}
+function hideSwitchOverlay() {
+  const el = document.getElementById("switchOverlay");
+  if (el) el.style.display = "none";
+  switchTargetId = null;
+}
+function _checkSwitchDone() {
+  if (!switchTargetId) return;
+  if (state && state.is_connecting) return;       // 仍在连接中，保持遮罩
+  if (Date.now() < switchOverlayMinShow) return;  // 最少展示 1 秒，避免一闪而过
+  const active = state ? state.active_openvpn_node_id : null;
+  if (active === switchTargetId) {
+    hideSwitchOverlay();
+    showToast("已切换至节点 " + switchTargetId, "info");
+  } else if (!active) {
+    hideSwitchOverlay();
+    showToast("切换失败：未能建立连接，请重试", "error");
+  } else {
+    // 连到了其它节点（极少），结束遮罩
+    hideSwitchOverlay();
+  }
+}
+
 function startConnectionPolling() {
   if (pollInterval) clearInterval(pollInterval);
   _pollStableOffCount = 0;
@@ -5024,6 +5073,9 @@ function startConnectionPolling() {
       stableSortNodes();
       updateCountryFilter();
       render();
+
+      // 若正在切换节点，检查是否已连上新 IP（决定是否关闭过渡遮罩）
+      if (switchTargetId) _checkSwitchDone();
 
       if (!state.is_connecting) {
         // 防抖：自动重连/重试过程中后端会瞬时把 is_connecting 切回 False
@@ -5079,6 +5131,8 @@ async function connectNode(id, slotId){
       // 后端已改为后台异步受理（立即返回 ok），这里只要受理成功就返回，
       // 最终连接结果以轮询读到的真实状态为准，全程不弹错误。
       if (r && r.ok) {
+        // 显示"正在切换节点"过渡遮罩，由轮询在真正连上新 IP 后关闭
+        showSwitchOverlay(id);
         return;
       }
       // 明确的业务错误（如子出口未运行），需要告知用户
