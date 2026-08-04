@@ -47,9 +47,9 @@ echo -e "${BLUE}        欢迎使用 AimiliVPN 一键源码部署与管理脚本
 echo -e "${BLUE}==========================================================${PLAIN}"
 
 # 3. Configure GitHub Repository URL
-# Default to the user's repository (kadiswang/aimili-vpngate)
+# Default to the user's repository (kadiswang/kada)
 DEFAULT_USER="kadiswang"
-DEFAULT_REPO="aimili-vpngate"
+DEFAULT_REPO="kada"
 
 # Allow custom repository override via command line arguments
 GITHUB_USER="${1:-${DEFAULT_USER}}"
