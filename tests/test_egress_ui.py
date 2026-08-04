@@ -8,10 +8,11 @@ from unittest import mock
 
 import slot_manager
 import vpngate_manager as vm
+import egress
 
 _BASE = Path(__file__).resolve().parent.parent
 _SOURCE_BODY = ""
-for _f in ("vpngate_manager.py", "web.py"):
+for _f in ("vpngate_manager.py", "web.py", "egress.py"):
     _p = _BASE / _f
     if _p.exists():
         _SOURCE_BODY += _p.read_text(encoding="utf-8") + "\n"
@@ -58,7 +59,7 @@ class TestBuildEgressRegions(unittest.TestCase):
                 {"slot_id": "egress_2", "proxy_port": 7930, "region": ""},
             ]
         }
-        with mock.patch.object(vm, "_quick_proxy_listen", return_value=True):
+        with mock.patch.object(egress, "_quick_proxy_listen", return_value=True):
             regions = vm._build_egress_regions(ui_cfg)
         self.assertEqual(len(regions), 2)
         self.assertEqual(regions[0]["slot_id"], "egress_1")
@@ -68,7 +69,7 @@ class TestBuildEgressRegions(unittest.TestCase):
 
     def test_skips_invalid_slots(self):
         ui_cfg = {"slots": [{"slot_id": "", "proxy_port": 0}, {"region": "JP"}]}
-        with mock.patch.object(vm, "_quick_proxy_listen", return_value=False):
+        with mock.patch.object(egress, "_quick_proxy_listen", return_value=False):
             regions = vm._build_egress_regions(ui_cfg)
         self.assertEqual(regions, [])
 
@@ -144,7 +145,7 @@ class TestGetInstanceEgressStatusExtended(unittest.TestCase):
             "upstream_proxy": {"enabled": True, "type": "socks", "host": "1.2.3.4", "port": 1080, "user": "", "pass": ""},
         }
         with mock.patch.object(vm, "_cached_load_ui_config", return_value=ui_cfg), \
-             mock.patch.object(vm, "_quick_proxy_listen", return_value=True), \
+             mock.patch.object(egress, "_quick_proxy_listen", return_value=True), \
              mock.patch.object(vm, "active_openvpn_node_id", "node_x"):
             status = vm.get_instance_egress_status()
         self.assertEqual(status["min_health_score"], 75)
