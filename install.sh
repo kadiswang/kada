@@ -581,30 +581,36 @@ def update_service():
         print(f"未找到安装目录: {INSTALL_DIR}")
         time.sleep(2)
 
+def do_uninstall():
+    """执行实际卸载动作（不询问）"""
+    print("正在完全卸载 KADA...", flush=True)
+    stop_service()
+    if shutil.which("systemctl"):
+        subprocess.run(["systemctl", "disable", "kada.service"])
+        try:
+            os.unlink("/lib/systemd/system/kada.service")
+        except Exception:
+            pass
+    elif shutil.which("rc-service"):
+        subprocess.run(["rc-update", "del", "kada"])
+        try:
+            os.unlink("/etc/init.d/kada")
+        except Exception:
+            pass
+    for _bin in ("/usr/bin/kd", "/usr/bin/ml"):
+        try:
+            os.unlink(_bin)
+        except Exception:
+            pass
+    subprocess.run(["rm", "-rf", INSTALL_DIR])
+    print("\nKADA 已卸载！\n")
+
+
 def uninstall_service():
+    """命令行直接调用：先询问再卸载"""
     confirm = input("确定要完全卸载 KADA 吗？(y/N): ")
     if confirm.lower() == 'y':
-        print("正在完全卸载 KADA...", flush=True)
-        stop_service()
-        if shutil.which("systemctl"):
-            subprocess.run(["systemctl", "disable", "kada.service"])
-            try:
-                os.unlink("/lib/systemd/system/kada.service")
-            except Exception:
-                pass
-        elif shutil.which("rc-service"):
-            subprocess.run(["rc-update", "del", "kada"])
-            try:
-                os.unlink("/etc/init.d/kada")
-            except Exception:
-                pass
-        for _bin in ("/usr/bin/kd", "/usr/bin/ml"):
-            try:
-                os.unlink(_bin)
-            except Exception:
-                pass
-        subprocess.run(["rm", "-rf", INSTALL_DIR])
-        print("\nKADA 已卸载！\n")
+        do_uninstall()
         return True
     else:
         print("已取消卸载。")
@@ -943,24 +949,31 @@ def main():
                 name, func = options[key]
                 if func is None:
                     break
-                    
+                
+                # 卸载确认必须在备用屏幕内完成，退出后再 input 会和 shell prompt 抢输入
+                if func is uninstall_service:
+                    print("\033[H\033[J", end="", flush=True)
+                    print("\033[1m【卸载确认】\033[0m")
+                    print("确定要完全卸载 KADA 吗？(y/N)")
+                    print("\n请按 [y] 确认卸载，其他键取消: ", end="", flush=True)
+                    confirm = getch()
+                    if confirm.lower() != 'y':
+                        print("\n已取消卸载。")
+                        time.sleep(1)
+                        need_redraw = True
+                        continue
+                    # 确认后再退出备用屏幕执行卸载
+                    print("\033[?1049l\033[?25h", end="", flush=True)
+                    print(f"正在执行: {name}...\n")
+                    try:
+                        do_uninstall()
+                    except Exception as e:
+                        print(f"执行出错: {e}")
+                    break
+                
                 # Temporarily restore normal terminal scrollback and show cursor
                 print("\033[?1049l\033[?25h", end="", flush=True)
                 print(f"正在执行: {name}...\n")
-                
-                # 卸载要直接退出菜单，不能重新进入备用屏幕，也不能等回车
-                if func is uninstall_service:
-                    try:
-                        uninstalled = func()
-                    except Exception as e:
-                        print(f"执行出错: {e}")
-                        uninstalled = False
-                    if uninstalled:
-                        break
-                    # 取消卸载，重新进入菜单
-                    print("\033[?1049h\033[?25l\033[H\033[J", end="", flush=True)
-                    need_redraw = True
-                    continue
                 
                 try:
                     func()
