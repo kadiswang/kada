@@ -345,7 +345,7 @@ def http_client(client: socket.socket, first_byte: bytes) -> None:
             if not check_credentials(username, password):
                 client.sendall(
                     b"HTTP/1.1 407 Proxy Authentication Required\r\n"
-                    b"Proxy-Authenticate: Basic realm=\"AimiliVPN Proxy\"\r\n"
+                    b"Proxy-Authenticate: Basic realm=\"KADA Proxy\"\r\n"
                     b"Content-Length: 0\r\n\r\n"
                 )
                 return

@@ -1178,7 +1178,7 @@ def kill_existing_openvpn_processes() -> None:
                     pass
                 except (OSError, PermissionError):
                     pass
-            print(f"[Cleanup] Terminated AimiliVPN OpenVPN processes: {killed_pids}", flush=True)
+            print(f"[Cleanup] Terminated KADA OpenVPN processes: {killed_pids}", flush=True)
     except Exception as e:
         print(f"[Cleanup Error] Failed to kill existing OpenVPN processes: {e}", flush=True)
 
@@ -2342,7 +2342,7 @@ LOGIN_HTML = r"""<!DOCTYPE html>
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>AimiliVPN - 安全登录</title>
+  <title>KADA - 安全登录</title>
   <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet">
   <style>
     * { margin: 0; padding: 0; box-sizing: border-box; }
@@ -2569,7 +2569,7 @@ LOGIN_HTML = r"""<!DOCTYPE html>
     <div class="login-container">
       <div class="login-card">
       <div class="brand">
-        <div class="brand-name">AimiliVPN</div>
+        <div class="brand-name">KADA</div>
         <div class="brand-sub">VPN 节点管理系统</div>
       </div>
       <div class="welcome">欢迎回来</div>
@@ -2671,7 +2671,7 @@ INDEX_HTML = r"""<!doctype html>
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>AimiliVPN 节点池管理系统</title>
+  <title>KADA 节点池管理系统</title>
   <style>
     @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap');
 
@@ -3643,7 +3643,7 @@ INDEX_HTML = r"""<!doctype html>
 
   <aside class="sidebar" id="sidebar">
     <div class="sidebar-brand">
-      <div class="sidebar-brand-name">AimiliVPN</div>
+      <div class="sidebar-brand-name">KADA</div>
     </div>
     <nav class="sidebar-nav">
       <a class="nav-item active" id="nav_overview" href="javascript:void(0)" onclick="switchPage('overview')">
@@ -3719,7 +3719,7 @@ INDEX_HTML = r"""<!doctype html>
   <div class="brand">
     <h1>
       <svg xmlns="http://www.w3.org/2000/svg" style="width:24px; height:24px; color:#818cf8;" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2.5"><path stroke-linecap="round" stroke-linejoin="round" d="M9 12l2 2 4-4m5.618-4.016A11.955 11.955 0 0112 2.944a11.955 11.955 0 01-8.618 3.04A12.02 12.02 0 003 9c0 5.591 3.824 10.29 9 11.622 5.176-1.332 9-6.03 9-11.622 0-1.042-.133-2.052-.382-3.016z" /></svg>
-      AimiliVPN 节点管理系统
+      KADA 节点管理系统
     </h1>
     <div id="status" class="status" style="display: none;"><span class="status-dot"></span>服务加载中...</div>
   </div>

@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Regression tests for AimiliVPN pure logic.
+Regression tests for KADA pure logic.
 
 These cover the parsing / filtering / sorting functions that the previous AI
 changes kept breaking (and that had no tests, so regressions shipped silently).

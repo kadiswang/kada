@@ -1,5 +1,5 @@
 # ============================================
-#  AimiliVPN .gitignore
+#  KADA .gitignore
 # ============================================
 
 # ---- Nuitka 编译产物 ----
@@ -52,7 +52,7 @@ logs/
 # ---- 本地开发文档（不上传 GitHub） ----
 AI开发指令.md
 功能文档.md
-AimiliVPN_Analysis_ZH.md
+KADA_Analysis_ZH.md
 
 # ---- 临时和测试文件 ----
 scratch/

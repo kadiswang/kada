@@ -1,5 +1,5 @@
 """
-AimiliVPN 多地区管理界面（Director）。
+KADA 多地区管理界面（Director）。
 
 - 启动后按 ui_cfg.slots 拉起若干"地区子进程"，每个子进程运行现有引擎，互不影响。
 - 本页面只做编排与展示：列出各地区、增删地区、链接到各地区自带的管理后台。
@@ -63,7 +63,7 @@ def render_page() -> str:
             )
     return f"""<!DOCTYPE html>
 <html lang="zh">
-<head><meta charset="utf-8"><title>AimiliVPN 多地区管理</title>
+<head><meta charset="utf-8"><title>KADA 多地区管理</title>
 <style>
  body{{font-family:-apple-system,system-ui,'Microsoft YaHei',sans-serif;margin:0;background:#f6f7fb;color:#222;height:100vh;display:flex;flex-direction:column}}
  header{{padding:12px 20px;background:#fff;border-bottom:1px solid #eee;display:flex;align-items:center;gap:16px;flex-wrap:wrap}}
@@ -82,7 +82,7 @@ def render_page() -> str:
 </style></head>
 <body>
 <header>
- <h1>AimiliVPN · 多地区出口</h1>
+ <h1>KADA · 多地区出口</h1>
  <div class="tabs">{tabs}</div>
  <div class="add">
   <input id="region" placeholder="国家名，如 Japan" />

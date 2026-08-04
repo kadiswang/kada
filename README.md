@@ -1,4 +1,4 @@
-# AimiliVPN 🌐
+# KADA 🌐
 
 Bilingual: [中文](#中文) | [English](#english)
 
@@ -7,11 +7,11 @@ Bilingual: [中文](#中文) | [English](#english)
 <a name="中文"></a>
 ## 中文 (Chinese)
 
-AimiliVPN 是一款基于官方 VPNGate 开放协议的高性能、零依赖 VPN 代理网关。它以纯 Python 标准库编写，内置美观响应式的管理网页，提供智能并发测速、多路由模式、出站代理网关、实时日志等强大功能。
+KADA 是一款基于官方 VPNGate 开放协议的高性能、零依赖 VPN 代理网关。它以纯 Python 标准库编写，内置美观响应式的管理网页，提供智能并发测速、多路由模式、出站代理网关、实时日志等强大功能。
 
 ---
 
-### 🌟 VPS 优选推荐：跑 AimiliVPN 更稳更省心
+### 🌟 VPS 优选推荐：跑 KADA 更稳更省心
 [![BandwagonHost 顶级三网优化](https://img.shields.io/badge/BandwagonHost-%E9%A1%B6%E7%BA%A7%E4%B8%89%E7%BD%91%E4%BC%98%E5%8C%96-red?style=for-the-badge)](https://bandwagonhost.com/aff.php?aff=81790)
 [![RackNerd 6000GB 流量](https://img.shields.io/badge/RackNerd-6000GB%2F%E6%9C%88%20%E5%A4%A7%E6%B5%81%E9%87%8F-blue?style=for-the-badge)](https://my.racknerd.com/aff.php?aff=18708)
 
@@ -58,7 +58,7 @@ bash <(curl -Ls https://raw.githubusercontent.com/kadiswang/kada/main/install.sh
    - **固定 IP 节点**：始终锁定连接到这一个特定节点。
 
 #### 第三步：使用本机代理 (核心步骤)
-为了防止代理端口暴露至公网被恶意扫描和滥用，AimiliVPN 的双效代理服务（默认端口 **`7928`**，自适应支持 SOCKS5 和 HTTP 协议）**默认仅绑定在本地回环地址（`127.0.0.1`）**，只接收 VPS 本机上的流量，不对外机提供代理。
+为了防止代理端口暴露至公网被恶意扫描和滥用，KADA 的双效代理服务（默认端口 **`7928`**，自适应支持 SOCKS5 和 HTTP 协议）**默认仅绑定在本地回环地址（`127.0.0.1`）**，只接收 VPS 本机上的流量，不对外机提供代理。
 
 * **🐍 Python 脚本中使用代理**:
   ```python
@@ -137,7 +137,7 @@ bash <(curl -Ls https://raw.githubusercontent.com/kadiswang/kada/main/install.sh
 <a name="english"></a>
 ## English
 
-AimiliVPN is a high-performance, zero-dependency VPN proxy gateway built entirely using Python's standard library. It parses official VPNGate servers, benchmarks latency, and routes traffic through a built-in dual-protocol (HTTP/SOCKS5) proxy server.
+KADA is a high-performance, zero-dependency VPN proxy gateway built entirely using Python's standard library. It parses official VPNGate servers, benchmarks latency, and routes traffic through a built-in dual-protocol (HTTP/SOCKS5) proxy server.
 
 ### 🌟 Recommended VPS Deals
 [![BandwagonHost Premium Optimized Routes](https://img.shields.io/badge/BandwagonHost-Premium%20Optimized%20Routes-red?style=for-the-badge)](https://bandwagonhost.com/aff.php?aff=81790)
