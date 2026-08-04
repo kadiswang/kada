@@ -5937,15 +5937,17 @@ async function doRefreshNodes(){
       while (Date.now() - startTime < 300000) {
         await new Promise(r => setTimeout(r, 2000));
         try {
-          const status = await fetchWithCsrf("./api/status");
-          const ra = status ? (status.last_refresh_at || 0) : 0;
+          // 后端没有 /api/status，/api/nodes 会同时返回 nodes 与 state
+          const status = await fetchWithCsrf("./api/nodes");
+          const st = (status && status.state) ? status.state : {};
+          const ra = st.last_refresh_at || 0;
           if (ra > beforeRefresh) {
-            if (status.last_fetch_status === "error") {
+            if (st.last_fetch_status === "error") {
               setRefreshOverlayText("更新失败，请稍后重试");
               await new Promise(r => setTimeout(r, 2200));
               break;
             }
-            const added = status.last_fetch_added || 0;
+            const added = st.last_fetch_added || 0;
             setRefreshOverlayText("更新完成，新增 " + added + " 个节点，正在刷新网页…");
             await new Promise(r => setTimeout(r, 1600));
             await load(); // 自动刷新网页，呈现最新节点列表
