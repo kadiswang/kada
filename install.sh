@@ -81,7 +81,7 @@ elif [ "$PKG_MGR" = "dnf" ] || [ "$PKG_MGR" = "yum" ]; then
 fi
 
 # 4. Clone or pull the repository
-INSTALL_DIR="/opt/aimilivpn"
+INSTALL_DIR="/opt/kada"
 
 # Usage: bash install.sh [github_user] [github_repo] [branch]
 DEPLOY_BRANCH="$3"
@@ -137,8 +137,8 @@ fi
 # 5. Configure Service
 echo -e "\n${YELLOW}[3/4] 正在配置系统服务...${PLAIN}"
 if command -v systemctl >/dev/null 2>&1; then
-    echo -e "  -> 检测到 systemd，正在创建服务配置 /lib/systemd/system/aimilivpn.service ..."
-    cat > /lib/systemd/system/aimilivpn.service <<EOF
+    echo -e "  -> 检测到 systemd，正在创建服务配置 /lib/systemd/system/kada.service ..."
+    cat > /lib/systemd/system/kada.service <<EOF
 [Unit]
 Description=KADA OpenVPN Manager with HTTP/SOCKS5 Proxy
 After=network.target
@@ -150,16 +150,16 @@ ExecStart=/usr/bin/python3 ${INSTALL_DIR}/vpngate_manager.py
 Restart=always
 RestartSec=5
 Environment=PYTHONPATH=${INSTALL_DIR}
-EnvironmentFile=-/etc/default/aimilivpn
+EnvironmentFile=-/etc/default/kada
 
 [Install]
 WantedBy=multi-user.target
 EOF
     systemctl daemon-reload
-    systemctl enable aimilivpn.service
+    systemctl enable kada.service
 elif command -v rc-service >/dev/null 2>&1; then
-    echo -e "  -> 检测到 OpenRC，正在创建服务配置 /etc/init.d/aimilivpn ..."
-    cat > /etc/init.d/aimilivpn <<EOF
+    echo -e "  -> 检测到 OpenRC，正在创建服务配置 /etc/init.d/kada ..."
+    cat > /etc/init.d/kada <<EOF
 #!/sbin/openrc-run
 
 description="KADA OpenVPN Manager with HTTP/SOCKS5 Proxy"
@@ -167,15 +167,15 @@ command="/usr/bin/python3"
 command_args="${INSTALL_DIR}/vpngate_manager.py"
 command_background="yes"
 directory="${INSTALL_DIR}"
-pidfile="/run/aimilivpn.pid"
+pidfile="/run/kada.pid"
 
 depend() {
     need net
     after firewall
 }
 EOF
-    chmod +x /etc/init.d/aimilivpn
-    rc-update add aimilivpn default
+    chmod +x /etc/init.d/kada
+    rc-update add kada default
 else
     echo -e "${YELLOW}警告: 未能检测到 systemd 或 OpenRC，请手动管理服务。${PLAIN}"
 fi
@@ -194,8 +194,8 @@ import tty
 import termios
 import shutil
 
-INSTALL_DIR = "/opt/aimilivpn"
-LOG_FILE = "/opt/aimilivpn/vpngate_data/vpngate.log"
+INSTALL_DIR = "/opt/kada"
+LOG_FILE = "/opt/kada/vpngate_data/vpngate.log"
 
 def generate_random_password():
     import random
@@ -213,7 +213,7 @@ def generate_random_suffix():
 
 def load_ui_cfg():
     import json
-    path = "/opt/aimilivpn/vpngate_data/ui_auth.json"
+    path = "/opt/kada/vpngate_data/ui_auth.json"
     cfg = {"host": "::", "port": 8787, "secret_path": "EJsW2EeBo9lY", "password": ""}
     if os.path.exists(path):
         try:
@@ -227,7 +227,7 @@ def load_ui_cfg():
 
 def save_ui_cfg(cfg):
     import json
-    path = "/opt/aimilivpn/vpngate_data/ui_auth.json"
+    path = "/opt/kada/vpngate_data/ui_auth.json"
     os.makedirs(os.path.dirname(path), exist_ok=True)
     try:
         with open(path, "w", encoding="utf-8") as f:
@@ -238,7 +238,7 @@ def save_ui_cfg(cfg):
 
 def load_state():
     import json
-    path = "/opt/aimilivpn/vpngate_data/state.json"
+    path = "/opt/kada/vpngate_data/state.json"
     state = {"active_openvpn_node_id": "", "last_check_message": "", "is_connecting": False}
     if os.path.exists(path):
         try:
@@ -252,7 +252,7 @@ def load_state():
 
 def get_active_node_info():
     import json
-    path = "/opt/aimilivpn/vpngate_data/nodes.json"
+    path = "/opt/kada/vpngate_data/nodes.json"
     state = load_state()
     active_id = state.get("active_openvpn_node_id")
     if not active_id:
@@ -292,7 +292,7 @@ def ping_ip(ip):
         return "无法连接"
 
 def get_public_ip():
-    path = "/opt/aimilivpn/vpngate_data/public_ip.txt"
+    path = "/opt/kada/vpngate_data/public_ip.txt"
     if os.path.exists(path):
         try:
             with open(path, "r", encoding="utf-8") as f:
@@ -332,7 +332,7 @@ def check_port_listening(port):
             pass
     return False
 
-def get_service_pid(service_name="aimilivpn.service"):
+def get_service_pid(service_name="kada.service"):
     try:
         for pid_dir in os.listdir('/proc'):
             if pid_dir.isdigit():
@@ -347,7 +347,7 @@ def get_service_pid(service_name="aimilivpn.service"):
         pass
     return None
 
-def check_service_active(service_name="aimilivpn.service"):
+def check_service_active(service_name="kada.service"):
     return get_service_pid(service_name) is not None
 
 def check_openvpn_process():
@@ -357,7 +357,7 @@ def check_openvpn_process():
                 try:
                     with open(os.path.join('/proc', pid_dir, 'cmdline'), 'r') as f:
                         cmd = f.read().replace('\x00', ' ')
-                        if 'openvpn' in cmd and ('/opt/aimilivpn/vpngate_data' in cmd or '/opt/aimilivpn/vpngate_data/configs' in cmd):
+                        if 'openvpn' in cmd and ('/opt/kada/vpngate_data' in cmd or '/opt/kada/vpngate_data/configs' in cmd):
                             return True
                 except Exception:
                     continue
@@ -395,9 +395,9 @@ def print_status():
     is_connecting = state.get("is_connecting", False)
     
     gateway_ok = check_port_listening(proxy_port)
-    service_ok = check_service_active("aimilivpn.service")
+    service_ok = check_service_active("kada.service")
     openvpn_ok = check_openvpn_process()
-    pid = get_service_pid("aimilivpn.service")
+    pid = get_service_pid("kada.service")
     
     active_ip, active_loc = get_active_node_info()
     latency = state.get("active_node_latency", "测试中...") if active_ip else "无活动连接"
@@ -486,9 +486,9 @@ def print_status():
 
 def run_service_cmd(cmd):
     if shutil.which("systemctl"):
-        subprocess.run(["systemctl", cmd, "aimilivpn.service"])
+        subprocess.run(["systemctl", cmd, "kada.service"])
     elif shutil.which("rc-service"):
-        subprocess.run(["rc-service", "aimilivpn", cmd])
+        subprocess.run(["rc-service", "kada", cmd])
     else:
         print("未检测到支持的服务管理器 (systemd/OpenRC)")
 
@@ -587,15 +587,15 @@ def uninstall_service():
         print("正在完全卸载 KADA...", flush=True)
         stop_service()
         if shutil.which("systemctl"):
-            subprocess.run(["systemctl", "disable", "aimilivpn.service"])
+            subprocess.run(["systemctl", "disable", "kada.service"])
             try:
-                os.unlink("/lib/systemd/system/aimilivpn.service")
+                os.unlink("/lib/systemd/system/kada.service")
             except Exception:
                 pass
         elif shutil.which("rc-service"):
-            subprocess.run(["rc-update", "del", "aimilivpn"])
+            subprocess.run(["rc-update", "del", "kada"])
             try:
-                os.unlink("/etc/init.d/aimilivpn")
+                os.unlink("/etc/init.d/kada")
             except Exception:
                 pass
         try:
@@ -831,9 +831,9 @@ def get_status_state():
         state.get("proxy_latency_ms", 0),
         state.get("proxy_ok", False),
         check_port_listening(proxy_port),
-        check_service_active("aimilivpn.service"),
+        check_service_active("kada.service"),
         check_openvpn_process(),
-        get_service_pid("aimilivpn.service")
+        get_service_pid("kada.service")
     )
 
 def main():
@@ -1088,11 +1088,11 @@ fi
 # 8.5 Optimize network parameters (rp_filter for policy routing)
 echo -e "\n正在优化网络参数 (配置反向路径过滤 rp_filter=2 以支持策略路由)..."
 if [ -d "/etc/sysctl.d" ]; then
-    cat > /etc/sysctl.d/99-aimilivpn.conf <<EOF
+    cat > /etc/sysctl.d/99-kada.conf <<EOF
 net.ipv4.conf.all.rp_filter = 2
 net.ipv4.conf.default.rp_filter = 2
 EOF
-    sysctl -p /etc/sysctl.d/99-aimilivpn.conf >/dev/null 2>&1 || true
+    sysctl -p /etc/sysctl.d/99-kada.conf >/dev/null 2>&1 || true
 else
     # Fallback to appending to /etc/sysctl.conf
     if ! grep -q "net.ipv4.conf.all.rp_filter" /etc/sysctl.conf; then
@@ -1117,9 +1117,9 @@ fi
 
 echo -e "\n正在启动 KADA 服务并初始化网络..."
 if command -v systemctl >/dev/null 2>&1; then
-    systemctl restart aimilivpn.service || true
+    systemctl restart kada.service || true
 elif command -v rc-service >/dev/null 2>&1; then
-    rc-service aimilivpn restart || true
+    rc-service kada restart || true
 fi
 
 # Wait and poll for node loading and active connection

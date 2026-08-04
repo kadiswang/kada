@@ -20,7 +20,7 @@ import unittest
 
 # vpn_utils reads VPNGATE_DATA_DIR at import time, so point it at a temp dir
 # BEFORE importing the project modules.
-_TMP = tempfile.mkdtemp(prefix="aimili_test_")
+_TMP = tempfile.mkdtemp(prefix="kada_test_")
 os.environ["VPNGATE_DATA_DIR"] = _TMP
 
 _ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))

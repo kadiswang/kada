@@ -7,11 +7,11 @@ vpngate_manager.build/
 vpngate_manager.dist/
 *.build/
 *.dist/
-aimilivpn
+kada
 
 # ---- Debian 打包产物 ----
 *.deb
-aimilivpn_*
+kada_*
 
 # ---- Python 缓存 ----
 __pycache__/

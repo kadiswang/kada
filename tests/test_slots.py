@@ -92,8 +92,8 @@ class TestVpnSlotRuntime(unittest.TestCase):
 
     def test_vpnslot_defaults(self):
         cfg = SlotConfig(slot_id="jp", region="Japan")
-        slot = VPNSlot(cfg=cfg, data_dir=Path("/tmp/aimili_test"))
-        self.assertEqual(slot.nodes_file, Path("/tmp/aimili_test") / "nodes_jp.json")
+        slot = VPNSlot(cfg=cfg, data_dir=Path("/tmp/kada_test"))
+        self.assertEqual(slot.nodes_file, Path("/tmp/kada_test") / "nodes_jp.json")
         # lock / maintenance_lock 必须是可调用的锁对象（有 acquire/release）
         self.assertTrue(callable(getattr(slot.lock, "acquire", None)) and callable(getattr(slot.lock, "release", None)))
         self.assertTrue(
@@ -105,7 +105,7 @@ class TestVpnSlotRuntime(unittest.TestCase):
 
     def test_build_slots_from_old_config(self):
         ui_cfg = {"force_country": "Japan", "proxy_port": 7928}
-        slots_list = SlotManager().build_slots(ui_cfg, Path("/tmp/aimili_test"))
+        slots_list = SlotManager().build_slots(ui_cfg, Path("/tmp/kada_test"))
         self.assertEqual(len(slots_list), 1)
         self.assertEqual(slots_list[0].cfg.slot_id, "default")
 
