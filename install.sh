@@ -950,7 +950,7 @@ def main():
                 if func is None:
                     break
                 
-                # 卸载确认必须在备用屏幕内完成，退出后再 input 会和 shell prompt 抢输入
+                # 卸载确认和执行都必须在备用屏幕内完成，这个 SSH 客户端切回普通屏幕会多出空 prompt
                 if func is uninstall_service:
                     print("\033[H\033[J", end="", flush=True)
                     print("\033[1m【卸载确认】\033[0m")
@@ -962,13 +962,15 @@ def main():
                         time.sleep(1)
                         need_redraw = True
                         continue
-                    # 确认后再退出备用屏幕执行卸载
-                    print("\033[?1049l\033[?25h", end="", flush=True)
+                    # 不退出备用屏幕，直接在里面执行卸载，避免切屏后终端多 prompt
+                    print("\033[H\033[J", end="", flush=True)
                     print(f"正在执行: {name}...\n")
                     try:
                         do_uninstall()
                     except Exception as e:
                         print(f"执行出错: {e}")
+                    print("\n按任意键退出...")
+                    getch()
                     break
                 
                 # Temporarily restore normal terminal scrollback and show cursor
