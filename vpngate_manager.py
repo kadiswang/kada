@@ -78,75 +78,36 @@ class DualStackHTTPServer(ThreadingHTTPServer):
 import vpn_utils
 import proxy_server
 
-def env_int(name: str, default: int, min_value: int | None = None, max_value: int | None = None) -> int:
-    raw = os.environ.get(name)
-    try:
-        value = int(raw) if raw not in (None, "") else default
-    except (TypeError, ValueError):
-        print(f"[配置警告] 环境变量 {name}={raw!r} 不是有效整数，使用默认值 {default}", flush=True)
-        value = default
-    if min_value is not None and value < min_value:
-        print(f"[配置警告] 环境变量 {name}={value} 小于允许值 {min_value}，使用默认值 {default}", flush=True)
-        return default
-    if max_value is not None and value > max_value:
-        print(f"[配置警告] 环境变量 {name}={value} 大于允许值 {max_value}，使用默认值 {default}", flush=True)
-        return default
-    return value
+# --- 共享底座 / 节点池模块（模块化拆分 Step 1）---------------------------------
+# common.py 是全局锁与节点缓存的单一真相源；nodes.py 是节点池纯逻辑层。
+# 这里逐名导入而非 import *，保证原有调用点无需改动，同时避免全局变量按值拷贝。
+import common
+from common import (
+    env_int, bounded_int,
+    API_URL, FETCH_INTERVAL_SECONDS, CHECK_INTERVAL_SECONDS, TARGET_VALID_NODES, MAX_SCAN_ROWS,
+    OPENVPN_TEST_TIMEOUT_SECONDS, MANUAL_TEST_NODE_LIMIT, INITIAL_CONNECT_TEST_LIMIT,
+    OPENVPN_CMD, OPENVPN_AUTH_USER, OPENVPN_AUTH_PASS, LOCAL_PROXY_HOST, LOCAL_PROXY_PORT,
+    UI_HOST, UI_PORT, INVALID_BACKOFF_SECONDS,
+    ROOT_DIR, DATA_DIR, CONFIG_DIR, NODES_FILE, STATE_FILE, AUTH_FILE,
+    UPSTREAM_PROXY_AUTH_FILE, BLACKLIST_FILE,
+    SESSION_CLEANUP_INTERVAL, SESSION_TIMEOUT, LOGIN_RATE_LIMIT_WINDOW,
+    LOGIN_RATE_LIMIT_MAX_ATTEMPTS, CSRF_TOKEN_EXPIRY, CONFIG_CACHE_TTL, LOG_TAIL_LINES,
+    NODE_CACHE_TTL, MAX_CONFIG_TEXT_LENGTH, NODE_EXPORT_FIELDS,
+    lock, read_json, write_json, cleanup_old_logs, log_to_json, parse_int, safe_name,
+)
+from nodes import (
+    proxy_basic_auth_header, recv_exact_from_socket, read_http_response_head,
+    socks5_address_bytes, read_socks5_connect_reply, format_host_port,
+    fetch_api_text_via_proxy,
+    parse_vpngate_rows, decode_config, load_blacklist, mark_blacklisted, row_to_node,
+    read_nodes, cached_nodes,
+    sort_all_nodes, apply_routing_filters, normalized_country_name, country_matches,
+    probe_priority_key, validate_node_allowed_by_routing,
+    active_test_indexes, test_indexes_lock, get_free_test_index, release_test_index,
+    test_config_path,
+    select_best_node,
+)
 
-def bounded_int(value: Any, default: int, min_value: int | None = None, max_value: int | None = None) -> int:
-    try:
-        parsed = int(value)
-    except (TypeError, ValueError):
-        return default
-    if min_value is not None and parsed < min_value:
-        return default
-    if max_value is not None and parsed > max_value:
-        return default
-    return parsed
-
-API_URL = "https://www.vpngate.net/api/iphone/"
-FETCH_INTERVAL_SECONDS = env_int("FETCH_INTERVAL_SECONDS", 1260, 1)
-CHECK_INTERVAL_SECONDS = env_int("CHECK_INTERVAL_SECONDS", 1260, 1)
-TARGET_VALID_NODES = env_int("TARGET_VALID_NODES", 3, 1)
-MAX_SCAN_ROWS = env_int("MAX_SCAN_ROWS", 300, 1)
-OPENVPN_TEST_TIMEOUT_SECONDS = env_int("OPENVPN_TEST_TIMEOUT_SECONDS", 35, 1)
-MANUAL_TEST_NODE_LIMIT = env_int("MANUAL_TEST_NODE_LIMIT", 5, 1, 20)
-INITIAL_CONNECT_TEST_LIMIT = env_int("INITIAL_CONNECT_TEST_LIMIT", 10, 1, 50)
-OPENVPN_CMD = os.environ.get("OPENVPN_CMD", "openvpn")
-OPENVPN_AUTH_USER = os.environ.get("OPENVPN_AUTH_USER", "vpn")
-OPENVPN_AUTH_PASS = os.environ.get("OPENVPN_AUTH_PASS", "vpn")
-LOCAL_PROXY_HOST = os.environ.get("LOCAL_PROXY_HOST", "127.0.0.1")
-LOCAL_PROXY_PORT = env_int("LOCAL_PROXY_PORT", 7928, 1, 65535)
-UI_HOST = os.environ.get("UI_HOST", "::")
-UI_PORT = env_int("UI_PORT", 8790, 1, 65535)
-INVALID_BACKOFF_SECONDS = env_int("INVALID_BACKOFF_SECONDS", 30 * 60, 1)
-
-ROOT_DIR = Path(sys.executable).resolve().parent if globals().get("__compiled__") else Path(__file__).resolve().parent
-DATA_DIR = Path(os.environ.get("VPNGATE_DATA_DIR") or "").resolve() if os.environ.get("VPNGATE_DATA_DIR") else ROOT_DIR / "vpngate_data"
-CONFIG_DIR = DATA_DIR / "configs"
-NODES_FILE = DATA_DIR / "nodes.json"
-STATE_FILE = DATA_DIR / "state.json"
-AUTH_FILE = DATA_DIR / "vpngate_auth.txt"
-UPSTREAM_PROXY_AUTH_FILE = DATA_DIR / "upstream_proxy_auth.txt"
-BLACKLIST_FILE = DATA_DIR / "blacklist.json"
-
-SESSION_CLEANUP_INTERVAL = 300  # 5 minutes
-SESSION_TIMEOUT = 30 * 24 * 3600  # 30 days
-LOGIN_RATE_LIMIT_WINDOW = 300  # 5 minutes
-LOGIN_RATE_LIMIT_MAX_ATTEMPTS = 10
-CSRF_TOKEN_EXPIRY = 30 * 60  # 30 minutes
-CONFIG_CACHE_TTL = 5.0  # 5 seconds
-LOG_TAIL_LINES = 500  # max lines returned via API
-NODE_CACHE_TTL = 2.0  # seconds
-MAX_CONFIG_TEXT_LENGTH = 8192  # truncate config_text for API responses
-NODE_EXPORT_FIELDS = [
-    "id", "country", "country_short", "host_name", "ip",
-    "score", "ping", "speed", "sessions", "owner", "asn",
-    "as_name", "location", "ip_type", "quality", "latency_ms",
-    "probe_status", "probe_message", "probed_at",
-]
-
-lock = threading.RLock()
 maintenance_lock = threading.Lock()
 active_sessions: dict[str, float] = {}
 active_ws_clients: list = []
@@ -170,9 +131,6 @@ EGRESS_ORCH: Any | None = None
 SLOT_ROUTE_TABLE: int = 0
 SLOT_FWMARK: int = 0
 
-_nodes_cache: list[dict[str, Any]] | None = None
-_nodes_cache_time = 0.0
-_NODES_CACHE_TTL = NODE_CACHE_TTL
 
 def _cleanup_expired_sessions() -> None:
     now = time.time()
@@ -200,7 +158,6 @@ def _cached_load_ui_config() -> dict[str, Any]:
 
 _config_cache: dict[str, Any] | None = None
 _config_cache_time = 0.0
-_last_cleanup_time = 0.0
 
 
 def load_ui_config() -> dict[str, Any]:
@@ -309,22 +266,6 @@ def upstream_proxy_auth_file() -> str | None:
         print(f"[上游代理认证] 写入认证文件失败: {exc}", flush=True)
         return None
 
-def write_json(path: Path, data: Any) -> None:
-    with lock:
-        tmp = path.with_suffix(path.suffix + ".tmp")
-        tmp.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
-        tmp.replace(path)
-        if path == NODES_FILE:
-            global _nodes_cache
-            _nodes_cache = None
-
-def read_json(path: Path, default: Any) -> Any:
-    with lock:
-        try:
-            return json.loads(path.read_text(encoding="utf-8"))
-        except (OSError, json.JSONDecodeError):
-            return default
-
 import random
 
 def generate_random_password() -> str:
@@ -361,6 +302,10 @@ try:
         UI_PORT = bounded_int(_init_cfg["port"], UI_PORT, 1, 65535)
     if "host" in _init_cfg:
         UI_HOST = _init_cfg["host"]
+    # 同步回 common，避免拆分后其他模块读到 common 里未被覆盖的默认端口
+    common.LOCAL_PROXY_PORT = LOCAL_PROXY_PORT
+    common.UI_PORT = UI_PORT
+    common.UI_HOST = UI_HOST
 except Exception:
     pass
 
@@ -410,53 +355,6 @@ def _validate_csrf_token(token: str | None) -> bool:
         _csrf_tokens[token] = (time.time() + CSRF_TOKEN_EXPIRY, token)
         return True
 
-def cleanup_old_logs(logs_dir: Path) -> None:
-    global _last_cleanup_time
-    now = time.time()
-    with lock:
-        if now - _last_cleanup_time < 3600:
-            return
-        _last_cleanup_time = now
-    try:
-        three_days_sec = 3 * 24 * 60 * 60
-        for path in logs_dir.glob("*.json"):
-            match = re.match(r"^(\d{4}-\d{2}-\d{2})\.json$", path.name)
-            if match:
-                date_str = match.group(1)
-                try:
-                    file_time = time.mktime(time.strptime(date_str, "%Y-%m-%d"))
-                    today_str = time.strftime("%Y-%m-%d", time.localtime())
-                    today_time = time.mktime(time.strptime(today_str, "%Y-%m-%d"))
-                    if today_time - file_time >= three_days_sec:
-                        with lock:
-                            path.unlink()
-                        print(f"[清理] 已删除3天前的旧日志文件: {path.name}", flush=True)
-                except Exception:
-                    if now - path.stat().st_mtime > three_days_sec:
-                        with lock:
-                            path.unlink()
-    except Exception as e:
-        print(f"[清理错误] 清理旧日志失败: {e}", flush=True)
-
-def log_to_json(level: str, module: str, message: str) -> None:
-    try:
-        logs_dir = DATA_DIR / "logs"
-        logs_dir.mkdir(exist_ok=True, parents=True)
-        date_str = time.strftime("%Y-%m-%d", time.localtime())
-        log_file = logs_dir / f"{date_str}.json"
-        entry = {
-            "timestamp": time.strftime("%Y-%m-%d %H:%M:%S", time.localtime()),
-            "level": level,
-            "module": module,
-            "message": message
-        }
-        with lock:
-            with open(log_file, "a", encoding="utf-8") as f:
-                f.write(json.dumps(entry, ensure_ascii=False) + "\n")
-        cleanup_old_logs(logs_dir)
-    except Exception as e:
-        print(f"[Log Error] Failed to write JSON log: {e}", flush=True)
-
 
 _audit_log_lock = threading.Lock()
 _audit_logs: list[dict[str, Any]] = []
@@ -500,19 +398,6 @@ def set_state(**updates: Any) -> None:
     state.update(updates)
     write_json(STATE_FILE, state)
 
-def read_nodes() -> list[dict[str, Any]]:
-    global _nodes_cache, _nodes_cache_time
-    now = time.time()
-    with lock:
-        if _nodes_cache is not None and now - _nodes_cache_time < _NODES_CACHE_TTL:
-            return _nodes_cache
-        raw = read_json(NODES_FILE, [])
-        if not isinstance(raw, list):
-            _nodes_cache = []
-            return []
-        _nodes_cache = [item for item in raw if isinstance(item, dict)]
-        _nodes_cache_time = now
-        return _nodes_cache
 
 def get_state() -> dict[str, Any]:
     global active_openvpn_node_id, is_connecting
@@ -551,10 +436,6 @@ def get_state() -> dict[str, Any]:
     
     return state
 
-def safe_name(value: str) -> str:
-    value = re.sub(r"[^A-Za-z0-9_.-]+", "_", value.strip())
-    return value.strip("._") or "node"
-
 def clear_active_connection_state(message: str) -> None:
     global active_openvpn_process, active_openvpn_node_id
     stop_process(active_openvpn_process)
@@ -572,229 +453,6 @@ def clear_active_connection_state(message: str) -> None:
         last_check_message=message,
     )
 
-def parse_int(value: Any) -> int:
-    try:
-        return int(value)
-    except (TypeError, ValueError):
-        return 0
-
-def proxy_basic_auth_header(username: str, password: str) -> str:
-    token = base64.b64encode(f"{username}:{password}".encode("utf-8")).decode("ascii")
-    return f"Proxy-Authorization: Basic {token}\r\n"
-
-def recv_exact_from_socket(sock: socket.socket, size: int) -> bytes:
-    data = b""
-    while len(data) < size:
-        chunk = sock.recv(size - len(data))
-        if not chunk:
-            raise RuntimeError("Unexpected EOF while reading proxy response")
-        data += chunk
-    return data
-
-def read_http_response_head(sock: socket.socket, limit: int = 65536) -> bytes:
-    data = b""
-    while b"\r\n\r\n" not in data:
-        chunk = sock.recv(4096)
-        if not chunk:
-            break
-        data += chunk
-        if len(data) > limit:
-            raise RuntimeError("Proxy response header too large")
-    if b"\r\n\r\n" not in data:
-        raise RuntimeError("Incomplete HTTP proxy response header")
-    return data
-
-def socks5_address_bytes(host: str) -> tuple[int, bytes]:
-    try:
-        return 1, socket.inet_aton(host)
-    except OSError:
-        pass
-    try:
-        return 4, socket.inet_pton(socket.AF_INET6, host)
-    except OSError:
-        pass
-    host_bytes = host.encode("idna")
-    if len(host_bytes) > 255:
-        raise RuntimeError("SOCKS5 target host name is too long")
-    return 3, bytes([len(host_bytes)]) + host_bytes
-
-def read_socks5_connect_reply(sock: socket.socket) -> None:
-    header = recv_exact_from_socket(sock, 4)
-    if header[0] != 5:
-        raise RuntimeError("Invalid SOCKS5 reply version")
-    atyp = header[3]
-    if atyp == 1:
-        recv_exact_from_socket(sock, 4)
-    elif atyp == 3:
-        domain_len = recv_exact_from_socket(sock, 1)[0]
-        recv_exact_from_socket(sock, domain_len)
-    elif atyp == 4:
-        recv_exact_from_socket(sock, 16)
-    else:
-        raise RuntimeError(f"Invalid SOCKS5 reply address type: {atyp}")
-    recv_exact_from_socket(sock, 2)
-    if header[1] != 0:
-        raise RuntimeError(f"SOCKS5 connection request rejected, code={header[1]}")
-
-def format_host_port(host: str, port: int) -> str:
-    return f"[{host}]:{port}" if ":" in host and not host.startswith("[") else f"{host}:{port}"
-
-def fetch_api_text_via_proxy(url: str, ptype: str, phost: str, pport: int, use_ssl_verify: bool = True, proxy_user: str | None = None, proxy_pass: str | None = None) -> str:
-    import socket
-    import ssl
-    import urllib.parse
-
-    parsed = urllib.parse.urlsplit(url)
-    domain = parsed.hostname or "www.vpngate.net"
-    port = parsed.port or (443 if parsed.scheme == "https" else 80)
-    is_https = parsed.scheme == "https"
-    path = parsed.path or "/"
-    if parsed.query:
-        path += "?" + parsed.query
-
-    is_ipv6 = ":" in phost
-    af = socket.AF_INET6 if is_ipv6 else socket.AF_INET
-    s = None
-    try:
-        s = socket.socket(af, socket.SOCK_STREAM)
-        s.settimeout(12)
-        s.connect((phost, pport))
-        if proxy_user is None:
-            proxy_user, proxy_pass = vpn_utils.get_upstream_proxy_auth()
-        if ptype == "socks":
-            # SOCKS5 Handshake
-            if proxy_user is not None:
-                s.sendall(b"\x05\x02\x00\x02")
-            else:
-                s.sendall(b"\x05\x01\x00")
-            resp = recv_exact_from_socket(s, 2)
-            if len(resp) < 2 or resp[0] != 5:
-                raise RuntimeError("SOCKS5 authentication failed or unsupported")
-            if resp[1] == 2:
-                if proxy_user is None:
-                    raise RuntimeError("SOCKS5 proxy requires username/password authentication")
-                user_bytes = proxy_user.encode("utf-8")
-                pass_bytes = (proxy_pass or "").encode("utf-8")
-                if len(user_bytes) > 255 or len(pass_bytes) > 255:
-                    raise RuntimeError("SOCKS5 proxy credentials are too long")
-                s.sendall(b"\x01" + bytes([len(user_bytes)]) + user_bytes + bytes([len(pass_bytes)]) + pass_bytes)
-                auth_resp = recv_exact_from_socket(s, 2)
-                if len(auth_resp) < 2 or auth_resp[1] != 0:
-                    raise RuntimeError("SOCKS5 username/password authentication failed")
-            elif resp[1] != 0:
-                raise RuntimeError("SOCKS5 authentication method unsupported")
-            # SOCKS5 Connect
-            atyp, addr_bytes = socks5_address_bytes(domain)
-            req = b"\x05\x01\x00" + bytes([atyp]) + addr_bytes + port.to_bytes(2, 'big')
-            s.sendall(req)
-            read_socks5_connect_reply(s)
-            # If HTTPS, wrap socket with SSL
-            if is_https:
-                ctx = ssl.create_default_context() if use_ssl_verify else ssl._create_unverified_context()
-                s = ctx.wrap_socket(s, server_hostname=domain)
-        else: # http proxy
-            if is_https:
-                # HTTP CONNECT tunnel
-                authority = format_host_port(domain, port)
-                auth_header = proxy_basic_auth_header(proxy_user, proxy_pass or "") if proxy_user is not None else ""
-                req_str = f"CONNECT {authority} HTTP/1.1\r\nHost: {authority}\r\nUser-Agent: Mozilla/5.0 vpngate-openvpn-manager/2.0\r\n{auth_header}Proxy-Connection: Keep-Alive\r\n\r\n"
-                s.sendall(req_str.encode('ascii'))
-                resp = read_http_response_head(s)
-                status_line = resp.split(b"\r\n", 1)[0].decode("utf-8", errors="replace")
-                status_parts = status_line.split()
-                status_code = int(status_parts[1]) if len(status_parts) >= 2 and status_parts[1].isdigit() else 0
-                if status_code != 200:
-                    raise RuntimeError(f"HTTP CONNECT tunnel failed: {status_line}")
-                # Wrap socket with SSL
-                ctx = ssl.create_default_context() if use_ssl_verify else ssl._create_unverified_context()
-                s = ctx.wrap_socket(s, server_hostname=domain)
-            else:
-                # Direct HTTP request through proxy: request URI must be absolute
-                pass
-
-        # Send HTTP GET request
-        if ptype == "http" and not is_https:
-            request_uri = url
-        else:
-            request_uri = path
-            
-        req_headers = (
-            f"GET {request_uri} HTTP/1.1\r\n"
-            f"Host: {domain}\r\n"
-            f"User-Agent: Mozilla/5.0 vpngate-openvpn-manager/2.0\r\n"
-            f"Accept: text/plain,*/*\r\n"
-            f"{proxy_basic_auth_header(proxy_user, proxy_pass or '') if ptype == 'http' and not is_https and proxy_user is not None else ''}"
-            f"Connection: close\r\n\r\n"
-        )
-        s.sendall(req_headers.encode('utf-8'))
-
-        # Read response
-        response_data = b""
-        while True:
-            chunk = s.recv(4096)
-            if not chunk:
-                break
-            response_data += chunk
-            if len(response_data) > 10 * 1024 * 1024: # max 10MB safety guard
-                break
-    finally:
-        if s is not None:
-            try:
-                s.close()
-            except Exception:
-                pass
-
-    # Parse HTTP response
-    header_end = response_data.find(b"\r\n\r\n")
-    if header_end == -1:
-        raise RuntimeError("Invalid HTTP response format")
-    
-    headers_part = response_data[:header_end].decode('utf-8', errors='replace')
-    body_part = response_data[header_end+4:]
-
-    # Check for HTTP status code
-    lines = headers_part.splitlines()
-    if not lines:
-        raise RuntimeError("Empty response headers")
-    status_line = lines[0]
-    status_parts = status_line.split()
-    if len(status_parts) >= 2:
-        try:
-            status_code = int(status_parts[1])
-            if status_code != 200:
-                raise RuntimeError(f"HTTP Server returned status {status_code}: {status_line}")
-        except ValueError:
-            pass
-
-    # Handle chunked transfer encoding
-    is_chunked = False
-    for line in lines[1:]:
-        if ":" in line:
-            k, v = line.split(":", 1)
-            if k.strip().lower() == "transfer-encoding" and "chunked" in v.lower():
-                is_chunked = True
-                break
-
-    if is_chunked:
-        decoded = b""
-        idx = 0
-        while idx < len(body_part):
-            c_end = body_part.find(b"\r\n", idx)
-            if c_end == -1:
-                break
-            chunk_size_str = body_part[idx:c_end].split(b";")[0].strip()
-            try:
-                chunk_size = int(chunk_size_str, 16)
-            except ValueError:
-                break
-            if chunk_size == 0:
-                break
-            idx = c_end + 2
-            decoded += body_part[idx : idx + chunk_size]
-            idx += chunk_size + 2
-        body_part = decoded
-
-    return body_part.decode('utf-8', errors='replace')
 
 def _get_upstream_from_config() -> tuple[str | None, str | None, int | None, str | None, str | None]:
     try:
@@ -846,91 +504,8 @@ def fetch_api_text(url: str | None = None, use_ssl_verify: bool = True) -> str:
         with urllib.request.urlopen(request, timeout=12) as response:
             return response.read().decode("utf-8", errors="replace")
 
-def parse_vpngate_rows(text: str) -> list[dict[str, str]]:
-    lines = [line for line in text.splitlines() if line and not line.startswith("*")]
-    if lines and lines[0].startswith("#"):
-        # Strip the leading '#' AND any whitespace so the first column header
-        # is "HostName", not " HostName" (which would silently drop the field).
-        lines[0] = lines[0].lstrip("#").lstrip()
-    return list(csv.DictReader(lines))
 
-def decode_config(encoded: str) -> str:
-    return base64.b64decode(encoded.encode("ascii"), validate=False).decode("utf-8", errors="replace")
 
-def load_blacklist() -> dict[str, dict[str, Any]]:
-    now = time.time()
-    raw = read_json(BLACKLIST_FILE, {})
-    if not isinstance(raw, dict):
-        return {}
-    cleaned: dict[str, dict[str, Any]] = {}
-    changed = False
-    for key, entry in raw.items():
-        if not isinstance(entry, dict):
-            changed = True
-            continue
-        until = float(entry.get("until", 0) or 0)
-        if until and until > now:
-            cleaned[str(key)] = entry
-        else:
-            changed = True
-    if changed:
-        write_json(BLACKLIST_FILE, cleaned)
-    return cleaned
-
-def mark_blacklisted(node: dict[str, Any], message: str) -> None:
-    node_id = str(node.get("id") or "").strip()
-    if not node_id:
-        return
-    blacklist = load_blacklist()
-    now = time.time()
-    blacklist[node_id] = {
-        "id": node_id,
-        "ip": node.get("ip") or node.get("remote_host") or "",
-        "country": node.get("country", ""),
-        "reason": message,
-        "marked_at": now,
-        "until": now + INVALID_BACKOFF_SECONDS,
-    }
-    write_json(BLACKLIST_FILE, blacklist)
-
-def row_to_node(row: dict[str, str], config_text: str) -> dict[str, Any]:
-    ip = row.get("IP", "")
-    country_short = row.get("CountryShort", "")
-    remote_host, remote_port, proto = vpn_utils.parse_remote(config_text, ip)
-    node_id = safe_name("_".join([country_short or "XX", ip or remote_host, str(remote_port), proto]))
-    config_path = CONFIG_DIR / f"{node_id}.ovpn"
-    
-    country_long = row.get("CountryLong", "")
-    country_zh = vpn_utils.COUNTRY_TRANSLATIONS.get(country_long, vpn_utils.COUNTRY_TRANSLATIONS.get(country_long.strip(), country_long))
-    return {
-        "id": node_id,
-        "country": country_zh,
-        "country_en": country_long,
-        "country_short": country_short,
-        "host_name": row.get("HostName", ""),
-        "ip": ip,
-        "score": parse_int(row.get("Score")),
-        "ping": parse_int(row.get("Ping")),
-        "speed": parse_int(row.get("Speed")),
-        "sessions": parse_int(row.get("NumVpnSessions")),
-        "owner": "",
-        "asn": "",
-        "as_name": "",
-        "location": "",
-        "ip_type": "",
-        "quality": "",
-        "trust_score": 0,
-        "latency_ms": 0,
-        "config_file": str(config_path),
-        "config_text": config_text,
-        "proto": proto,
-        "remote_host": remote_host,
-        "remote_port": remote_port,
-        "fetched_at": time.time(),
-        "probe_status": "not_checked",
-        "probe_message": "",
-        "probed_at": 0,
-    }
 
 def fetch_candidates() -> list[dict[str, Any]]:
     # 多出口共享节点池：若本进程被标记为"消费共享池"（即子出口进程），
@@ -1035,8 +610,6 @@ def fetch_candidates() -> list[dict[str, Any]]:
     log_to_json("INFO", "Main", f"成功获取官方 API 节点，共 {len(candidates)} 个候选节点")
     return candidates
 
-def cached_nodes() -> list[dict[str, Any]]:
-    return read_nodes()
 
 _openvpn_version = None
 
@@ -1387,78 +960,6 @@ def stop_active_openvpn() -> None:
 def active_openvpn_running() -> bool:
     return active_openvpn_process is not None and active_openvpn_process.poll() is None
 
-def sort_all_nodes(nodes: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    available_nodes = sorted(
-        [n for n in nodes if n.get("probe_status") == "available" or n.get("active")],
-        key=lambda n: (
-            0 if n.get("ip_type") in ("residential", "mobile") else 1,
-            parse_int(n.get("latency_ms")) or 999999,
-            -parse_int(n.get("score"))
-        )
-    )
-    untested_nodes = sorted(
-        [n for n in nodes if n.get("probe_status") in ("not_checked", "testing") and not n.get("active")],
-        key=lambda n: (-parse_int(n.get("score")), parse_int(n.get("ping")))
-    )
-    unavailable_nodes = sorted(
-        [n for n in nodes if n.get("probe_status") == "unavailable" and not n.get("active")],
-        key=lambda n: (-parse_int(n.get("score")), -float(n.get("probed_at", 0)))
-    )
-    return available_nodes + untested_nodes + unavailable_nodes
-
-def apply_routing_filters(
-    nodes: list[dict[str, Any]],
-    ui_cfg: dict[str, Any],
-    include_unknown_ip_type: bool = False,
-) -> list[dict[str, Any]]:
-    candidates = list(nodes)
-    routing_mode = ui_cfg.get("routing_mode", "auto")
-    target_country = ui_cfg.get("force_country", "")
-
-    if routing_mode == "fixed_region" and target_country:
-        candidates = [
-            n for n in candidates
-            if country_matches(n.get("country"), target_country)
-        ]
-    elif routing_mode == "favorites":
-        fav_ids = set(ui_cfg.get("favorite_node_ids", []))
-        candidates = [n for n in candidates if n.get("id") in fav_ids]
-
-    routing_ip_type = ui_cfg.get("routing_ip_type", "all")
-    if routing_ip_type == "residential":
-        candidates = [
-            n for n in candidates
-            if n.get("ip_type") in ("residential", "mobile")
-            or (include_unknown_ip_type and not n.get("ip_type"))
-        ]
-    elif routing_ip_type == "hosting":
-        candidates = [
-            n for n in candidates
-            if n.get("ip_type") == "hosting"
-            or (include_unknown_ip_type and not n.get("ip_type"))
-        ]
-
-    min_health = ui_cfg.get("min_health_score", 0)
-    if min_health > 0:
-        candidates = [n for n in candidates if (n.get("trust_score") or 0) >= min_health]
-
-    return candidates
-
-def normalized_country_name(country: Any) -> str:
-    value = str(country or "").strip()
-    return vpn_utils.COUNTRY_TRANSLATIONS.get(value, value)
-
-def country_matches(node_country: Any, target_country: Any) -> bool:
-    return bool(target_country) and normalized_country_name(node_country) == normalized_country_name(target_country)
-
-def probe_priority_key(node: dict[str, Any]) -> tuple[int, int, int, int]:
-    ping = parse_int(node.get("ping")) or 999999
-    return (
-        ping,
-        -parse_int(node.get("score")),
-        -parse_int(node.get("speed")),
-        parse_int(node.get("sessions")),
-    )
 
 def current_fixed_node_id(ui_cfg: dict[str, Any]) -> str:
     if active_openvpn_node_id:
@@ -1469,29 +970,6 @@ def current_fixed_node_id(ui_cfg: dict[str, Any]) -> str:
         return str(active_node.get("id") or "")
     return str(ui_cfg.get("fixed_node_id") or "").strip()
 
-def validate_node_allowed_by_routing(node: dict[str, Any], ui_cfg: dict[str, Any]) -> None:
-    routing_mode = ui_cfg.get("routing_mode", "auto")
-    node_id = str(node.get("id") or "")
-
-    if routing_mode == "fixed_region":
-        target_country = ui_cfg.get("force_country", "")
-        if target_country and not country_matches(node.get("country"), target_country):
-            raise RuntimeError(f"当前已锁定国家【{target_country}】，不能连接其他国家节点")
-    elif routing_mode == "favorites":
-        fav_ids = set(ui_cfg.get("favorite_node_ids", []))
-        if node_id not in fav_ids:
-            raise RuntimeError("当前处于仅用收藏模式，不能连接未收藏节点")
-
-    routing_ip_type = ui_cfg.get("routing_ip_type", "all")
-    node_ip_type = node.get("ip_type")
-    if routing_ip_type == "residential" and node_ip_type not in ("residential", "mobile"):
-        raise RuntimeError("当前已锁定住宅 IP 出站，不能连接非住宅节点")
-    if routing_ip_type == "hosting" and node_ip_type != "hosting":
-        raise RuntimeError("当前已锁定机房 IP 出站，不能连接非机房节点")
-
-    min_health = ui_cfg.get("min_health_score", 0)
-    if min_health > 0 and (node.get("trust_score") or 0) < min_health:
-        raise RuntimeError(f"当前要求 IP 健康度 ≥{min_health}，该节点不满足")
 
 def enforce_active_node_allowed_by_routing(ui_cfg: dict[str, Any], reason: str = "路由规则已更新") -> str | None:
     active_id = active_openvpn_node_id
@@ -1554,24 +1032,6 @@ def reconnect_fixed_node_if_needed(ui_cfg: dict[str, Any]) -> bool:
     finally:
         is_connecting = previous_connecting
 
-active_test_indexes = set()
-test_indexes_lock = threading.Lock()
-
-def get_free_test_index() -> int:
-    with test_indexes_lock:
-        for idx in range(2, 100):
-            if idx not in active_test_indexes:
-                active_test_indexes.add(idx)
-                return idx
-        raise RuntimeError("没有可用的 OpenVPN 测试网卡编号，请稍后重试")
-
-def release_test_index(idx: int) -> None:
-    with test_indexes_lock:
-        active_test_indexes.discard(idx)
-
-def test_config_path(node_id: str) -> Path:
-    safe_id = safe_name(node_id)
-    return CONFIG_DIR / f".test_{safe_id}_{uuid.uuid4().hex}.ovpn"
 
 def test_node_by_id(node_id: str) -> dict[str, Any]:
     with lock:
@@ -2257,43 +1717,6 @@ def maintain_valid_nodes(force: bool = False) -> str:
         maintenance_lock.release()
 
 
-def select_best_node(
-    nodes: list[dict[str, Any]],
-    country: str = "",
-    fixed_id: str = "",
-    ip_type: str = "all",
-    min_health: int = 0,
-) -> dict[str, Any] | None:
-    """从共享节点池中挑选最优节点（纯函数，便于单元测试）。
-
-    - 指定 fixed_id：仅在该节点中挑选。
-    - 指定 country：仅保留匹配国家（normalized 比较）的节点。
-    - ip_type / min_health：按类型与健康度过滤。
-    - 优先返回已被测速标记为 available 的节点；否则退回到非 unavailable 的节点。
-    """
-    if fixed_id:
-        cands = [n for n in nodes if str(n.get("id")) == str(fixed_id)]
-    elif country:
-        cands = [n for n in nodes if country_matches(n.get("country"), country)]
-    else:
-        cands = list(nodes)
-
-    if ip_type == "residential":
-        cands = [n for n in cands if n.get("ip_type") in ("residential", "mobile")]
-    elif ip_type == "hosting":
-        cands = [n for n in cands if n.get("ip_type") == "hosting"]
-
-    if min_health > 0:
-        cands = [n for n in cands if (n.get("trust_score") or 0) >= min_health]
-
-    available = [n for n in cands if n.get("probe_status") == "available"]
-    available.sort(key=probe_priority_key)
-    if available:
-        return available[0]
-
-    rest = [n for n in cands if n.get("probe_status") != "unavailable"]
-    rest.sort(key=probe_priority_key)
-    return rest[0] if rest else None
 
 
 def maintain_shared_egress() -> None:
