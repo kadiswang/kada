@@ -153,12 +153,13 @@ LOGIN_HTML = r"""<!DOCTYPE html>
       transition: all .2s;
     }
     [data-theme="dark"] .login-toolbar button {
-      background: rgba(255,255,255,0.08);
-      border-color: rgba(255,255,255,0.1);
-      color: #94a3b8;
+      background: rgba(30,41,59,0.9);
+      border-color: rgba(255,255,255,0.2);
+      color: #f8fafc;
+      box-shadow: 0 2px 8px rgba(0,0,0,0.2);
     }
     .login-toolbar button:hover { background: #fff; color: #6366f1; box-shadow: 0 2px 8px rgba(99,102,241,0.15); }
-    [data-theme="dark"] .login-toolbar button:hover { background: rgba(255,255,255,0.15); color: #60a5fa; }
+    [data-theme="dark"] .login-toolbar button:hover { background: rgba(51,65,85,0.95); color: #fff; }
 
     .login-card {
       position: relative;
@@ -345,7 +346,10 @@ LOGIN_HTML = r"""<!DOCTYPE html>
       dark: '<path stroke-linecap="round" stroke-linejoin="round" d="M21.752 15.002A9.718 9.718 0 0118 15.75c-5.385 0-9.75-4.365-9.75-9.75 0-1.33.266-2.597.748-3.752A9.753 9.753 0 003 11.25C3 16.635 7.365 21 12.75 21a9.753 9.753 0 009.002-5.998z" />',
       system: '<path stroke-linecap="round" stroke-linejoin="round" d="M9 17.25v1.007a3 3 0 01-.879 2.122L7.5 21h9l-.621-.621A3 3 0 0115 18.257V17.25m6-12V15a2.25 2.25 0 01-2.25 2.25H5.25A2.25 2.25 0 013 5.25m18 0A2.25 2.25 0 0018.75 3H5.25A2.25 2.25 0 003 5.25m18 0V12a2.25 2.25 0 01-2.25 2.25H5.25A2.25 2.25 0 013 12V5.25" />'
     };
-    function getThemeIcon(theme) { return themeIcons[theme] || themeIcons.light; }
+    function getThemeIcon(theme) {
+      var path = themeIcons[theme] || themeIcons.light;
+      return '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">' + path + '</svg>';
+    }
     function setLoginTheme(theme) {
       document.documentElement.setAttribute('data-theme', theme === 'system' ? (window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light') : theme);
       var btn = document.getElementById('login_theme_btn');
@@ -2908,7 +2912,10 @@ var themeIcons = {
   dark: '<path stroke-linecap="round" stroke-linejoin="round" d="M21.752 15.002A9.718 9.718 0 0118 15.75c-5.385 0-9.75-4.365-9.75-9.75 0-1.33.266-2.597.748-3.752A9.753 9.753 0 003 11.25C3 16.635 7.365 21 12.75 21a9.753 9.753 0 009.002-5.998z" />',
   system: '<path stroke-linecap="round" stroke-linejoin="round" d="M9 17.25v1.007a3 3 0 01-.879 2.122L7.5 21h9l-.621-.621A3 3 0 0115 18.257V17.25m6-12V15a2.25 2.25 0 01-2.25 2.25H5.25A2.25 2.25 0 013 15V5.25m18 0A2.25 2.25 0 0018.75 3H5.25A2.25 2.25 0 003 5.25m18 0V12a2.25 2.25 0 01-2.25 2.25H5.25A2.25 2.25 0 013 12V5.25" />'
 };
-function getThemeIcon(theme) { return themeIcons[theme] || themeIcons.light; }
+function getThemeIcon(theme) {
+  var path = themeIcons[theme] || themeIcons.light;
+  return '<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">' + path + '</svg>';
+}
 function setTheme(theme) {
   document.documentElement.setAttribute('data-theme', theme === 'system' ? (window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light') : theme);
   var si = document.getElementById('sidebar_theme_icon');
