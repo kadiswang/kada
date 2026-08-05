@@ -198,5 +198,39 @@ class TestParseRemote(unittest.TestCase):
         self.assertEqual(proto, "tcp")
 
 
+class TestDiagnoseOpenvpnFailure(unittest.TestCase):
+    def test_no_route_to_host(self):
+        tail = [
+            "TCP: connect to [AF_INET]1.2.3.4:995 failed: No route to host",
+            "SIGUSR1[connection failed(soft),connection-failed] received, process restarting",
+            "All connections have been connect-retry-max (1) times unsuccessful, exiting",
+            "Exiting due to fatal error",
+        ]
+        code, msg = vu.diagnose_openvpn_failure(tail)
+        self.assertEqual(code, 2011)
+        self.assertIn("没有可达路由", msg)
+
+    def test_snippet_prefers_informative_line(self):
+        tail = [
+            "TCP: connect to [AF_INET]1.2.3.4:995 failed: No route to host",
+            "SIGUSR1[connection failed(soft),connection-failed] received, process restarting",
+            "All connections have been connect-retry-max (1) times unsuccessful, exiting",
+            "Exiting due to fatal error",
+        ]
+        snippet = vu.extract_openvpn_failure_snippet(tail)
+        self.assertIn("No route to host", snippet)
+        self.assertNotIn("Exiting due to fatal error", snippet)
+
+    def test_auth_failed_detected(self):
+        tail = [
+            "SENT CONTROL [opengw.net]: 'PUSH_REQUEST' (status=1)",
+            "AUTH: Received control message: AUTH_FAILED",
+            "SIGTERM[soft,auth-failure] received, process exiting",
+        ]
+        code, msg = vu.diagnose_openvpn_failure(tail)
+        self.assertEqual(code, 2005)
+        self.assertIn("身份验证失败", msg)
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

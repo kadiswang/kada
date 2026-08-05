@@ -553,7 +553,8 @@ def run_openvpn_until_ready(config_file: str, keep_alive: bool, route_nopull: bo
 
     if not ok:
         err_code, diag_msg = vpn_utils.diagnose_openvpn_failure(tail)
-        message = f"[错误代码 {err_code}] {diag_msg} (原始日志尾部: {tail[-1][-100:] if tail else '无'})"
+        snippet = vpn_utils.extract_openvpn_failure_snippet(tail)
+        message = f"[错误代码 {err_code}] {diag_msg} (关键日志: {snippet})"
     startup_done[0] = True
     if not keep_alive or not ok:
         stop_process(process)

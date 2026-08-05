@@ -656,35 +656,72 @@ def diagnose_api_failure(api_url: str = "https://www.vpngate.net/api/iphone/") -
     return 1010, "[ERR_API_TLS_INTERFERENCE] HTTPS/TLS 握手被干扰。原因: 可以建立 TCP 连接但请求超时，通常是由于防火墙通过 SNI 阻断了 TLS 握手流。"
 
 
+def extract_openvpn_failure_snippet(log_tail: list[str], max_chars: int = 220) -> str:
+    """从 OpenVPN 日志尾部挑出最有信息量的关键行，而不是只截最后一行。"""
+    if not log_tail:
+        return "无"
+    # 按优先级排序：越具体的错误越先匹配
+    keywords = [
+        "no route to host", "network is unreachable",
+        "auth_failed", "authentication failed",
+        "connection refused",
+        "connection timed out",
+        "all connections have been connect-retry-max",
+        "cannot resolve host address", "resolve: host name",
+        "tls error", "tls handshake failed",
+        "options error",
+        "cannot allocate tun", "cannot open tun/tap dev", "cannot ioctl",
+        "permission denied", "root privileges",
+        "exiting due to fatal error", "fatal error",
+        "failed", "error",
+    ]
+    for kw in keywords:
+        for i in range(len(log_tail) - 1, -1, -1):
+            if kw in log_tail[i].lower():
+                start = max(0, i - 1)
+                snippet = " | ".join(log_tail[start:i + 1])
+                if len(snippet) > max_chars:
+                    snippet = snippet[-max_chars:]
+                return snippet
+    snippet = " | ".join(log_tail[-2:])
+    if len(snippet) > max_chars:
+        snippet = snippet[-max_chars:]
+    return snippet
+
+
 def diagnose_openvpn_failure(log_tail: list[str]) -> tuple[int, str]:
     joined_log = "\n".join(log_tail).lower()
-    
+
     if "command not found" in joined_log or "no such file or directory" in joined_log:
         return 2001, "[ERR_OVPN_CMD_NOT_FOUND] 未找到 openvpn 命令。原因: 系统中未安装 OpenVPN 软件，或环境变量 PATH 不正确。"
-    
-    if "cannot allocate tun" in joined_log or "cannot open tun/tap dev" in joined_log or "cannot ioctl" in joined_log or "cannot allocate tun/tap dev" in joined_log or "dev/net/tun" in joined_log or "operation not permitted" in joined_log:
+
+    if "cannot allocate tun" in joined_log or "cannot open tun/tap dev" in joined_log or "cannot ioctl" in joined_log or "dev/net/tun" in joined_log or "operation not permitted" in joined_log:
         return 2009, "[ERR_OVPN_TUN_NOT_AVAILABLE] 无法创建或访问虚拟网卡 (TUN 设备)。原因: ① 缺少 tun 内核模块；② 当前运行在容器(如 LXC/OpenVZ/Docker)中且宿主机未授予网卡创建权限/未启用 CAP_NET_ADMIN 权限；③ `/dev/net/tun` 文件权限不足；④ 未使用 root 用户运行。如果是 Docker，请添加 `--cap-add=NET_ADMIN` 和 `--device=/dev/net/tun` 参数重新运行。"
-        
+
     if "auth_failed" in joined_log or "authentication failed" in joined_log:
         return 2005, "[ERR_OVPN_AUTH_FAILED] OpenVPN 身份验证失败。原因: 节点配置的用户名密码不正确，或者该免费节点已失效/限制连接。"
-        
+
     if "cannot resolve host address" in joined_log or "resolve: host name" in joined_log:
         return 2003, "[ERR_OVPN_DNS_RESOLVE] 节点服务器域名解析失败。原因: 本地 DNS 解析异常，或者节点域名已失效。"
-        
+
     if "tls error: tls key negotiation failed" in joined_log or "tls error: tls handshake failed" in joined_log:
         return 2006, "[ERR_OVPN_TLS_BLOCKED] TLS 握手超时/失败。原因: 可能是由于物理链路极差导致握手包丢失，或者受 VPS 防火墙规则/网络监管(如 GFW)深度包检测拦截了 OpenVPN 协议流量。"
-        
-    if "connection timed out" in joined_log or "timeout" in joined_log:
-        return 2004, "[ERR_OVPN_NODE_UNREACHABLE] 节点连接超时。原因: 远程节点已关机、VPS 本身出站流量被本地防火墙拦截，或者目的 IP:端口遭 ISP/GFW 屏蔽拦截。"
+
+    if "no route to host" in joined_log or "network is unreachable" in joined_log:
+        return 2011, "[ERR_OVPN_NO_ROUTE] 到节点没有可达路由。原因: 本地路由表无法到达目标 IP，或该节点当前已下线/网络不可达。"
+
     if "connection refused" in joined_log:
         return 2004, "[ERR_OVPN_NODE_UNREACHABLE] 节点连接被拒绝。原因: 目的服务器未在指定端口监听，或者主动拒绝了连接。"
-        
+
+    if "connection timed out" in joined_log or "all connections have been connect-retry-max" in joined_log or "timeout" in joined_log:
+        return 2004, "[ERR_OVPN_NODE_UNREACHABLE] 节点连接超时/重试耗尽。原因: 远程节点已关机、VPS 本身出站流量被本地防火墙拦截，或者目的 IP:端口遭 ISP/GFW 屏蔽拦截。"
+
     if "permission denied" in joined_log or "root privileges" in joined_log or "need root" in joined_log:
         return 2002, "[ERR_OVPN_PERMISSION_DENIED] 权限不足。原因: 运行 OpenVPN 需要 root 权限，请确保以 root 用户身份或使用 sudo 运行本系统。"
 
     if "options error" in joined_log:
         return 2007, "[ERR_OVPN_ROUTE_NOPULL] 获取/解析 PUSH 配置参数冲突。原因: 某些推送选项在当前版本的客户端或配置环境中不可用。"
-        
+
     return 2010, "[ERR_OVPN_UNKNOWN] OpenVPN 其他运行时异常。原因: 连接握手期间发生其他协议错误，详细信息请查看日志尾部。"
 
 
