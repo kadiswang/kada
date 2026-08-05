@@ -17,7 +17,6 @@ import sys
 import time
 import subprocess
 from pathlib import Path
-from typing import Any
 
 import vpn_utils
 from common import (

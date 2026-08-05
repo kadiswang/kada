@@ -1308,11 +1308,16 @@ def maintain_valid_nodes(force: bool = False) -> str:
                         with lock:
                             final_nodes = read_nodes()
                             active_id = active_openvpn_node_id
-                            filtered = [
-                                n for n in final_nodes
-                                if n.get("ip_type") in ("residential", "mobile")
-                                or (active_id and n.get("id") == active_id)
-                            ]
+                            _ip_type_filter = state.get("routing_ip_type", "all")
+                            if _ip_type_filter == "all":
+                                filtered = list(final_nodes)
+                            else:
+                                _allowed_types = ("residential", "mobile") if _ip_type_filter == "residential" else ("hosting",)
+                                filtered = [
+                                    n for n in final_nodes
+                                    if n.get("ip_type") in _allowed_types
+                                    or (active_id and n.get("id") == active_id)
+                                ]
                             if filtered:
                                 removed = len(final_nodes) - len(filtered)
                                 write_json(NODES_FILE, filtered)
@@ -1376,11 +1381,16 @@ def maintain_valid_nodes(force: bool = False) -> str:
 
             final_nodes = read_nodes()
             active_id = active_openvpn_node_id
-            filtered = [
-                n for n in final_nodes
-                if n.get("ip_type") in ("residential", "mobile")
-                or (active_id and n.get("id") == active_id)
-            ]
+            _ip_type_filter = state.get("routing_ip_type", "all")
+            if _ip_type_filter == "all":
+                filtered = list(final_nodes)
+            else:
+                _allowed_types = ("residential", "mobile") if _ip_type_filter == "residential" else ("hosting",)
+                filtered = [
+                    n for n in final_nodes
+                    if n.get("ip_type") in _allowed_types
+                    or (active_id and n.get("id") == active_id)
+                ]
             if filtered:
                 removed = len(final_nodes) - len(filtered)
                 write_json(NODES_FILE, filtered)
