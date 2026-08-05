@@ -468,7 +468,8 @@ def query_ip_netcoffee(ip: str) -> dict[str, Any] | None:
         if not isinstance(data, dict) or not data.get("ip"):
             return None
 
-        ip_type = "residential"
+        # 查不到明确标记时不臆测为家宽，归为 unknown，交由路由开关决定去留
+        ip_type = "unknown"
         if data.get("is_mobile"):
             ip_type = "mobile"
         elif data.get("is_datacenter") or data.get("is_proxy") or data.get("is_vpn"):
@@ -527,7 +528,8 @@ def query_ip_api(ip: str) -> dict[str, Any] | None:
         if not isinstance(data, dict) or data.get("status") != "success":
             return None
 
-        ip_type = "residential"
+        # 查不到明确标记时不臆测为家宽，归为 unknown，交由路由开关决定去留
+        ip_type = "unknown"
         if data.get("mobile"):
             ip_type = "mobile"
         elif data.get("hosting") or data.get("proxy"):
@@ -552,7 +554,8 @@ def query_ip_api(ip: str) -> dict[str, Any] | None:
             "quality": quality,
             "trust_score": max(0, 100 - (data.get("fraudScore") or 0)),
             "is_datacenter": bool(data.get("hosting")),
-            "is_residential": not (data.get("hosting") or data.get("proxy")),
+            # ip-api 未提供住宅标记，未知不臆测为住宅
+            "is_residential": False,
             "is_vpn": False,
             "is_proxy": bool(data.get("proxy")),
             "is_tor": False,

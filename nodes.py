@@ -412,13 +412,13 @@ def apply_routing_filters(
         candidates = [
             n for n in candidates
             if n.get("ip_type") in ("residential", "mobile")
-            or (include_unknown_ip_type and not n.get("ip_type"))
+            or (include_unknown_ip_type and (not n.get("ip_type") or n.get("ip_type") == "unknown"))
         ]
     elif routing_ip_type == "hosting":
         candidates = [
             n for n in candidates
             if n.get("ip_type") == "hosting"
-            or (include_unknown_ip_type and not n.get("ip_type"))
+            or (include_unknown_ip_type and (not n.get("ip_type") or n.get("ip_type") == "unknown"))
         ]
 
     min_health = ui_cfg.get("min_health_score", 0)

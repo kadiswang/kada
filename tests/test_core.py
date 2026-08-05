@@ -97,6 +97,31 @@ class TestApplyRoutingFilters(unittest.TestCase):
         out = m.apply_routing_filters(self._nodes(), cfg)
         self.assertEqual([n["ip_type"] for n in out], ["hosting"])
 
+    def _with_unknown(self):
+        return self._nodes() + [{"country": "日本", "ip_type": "unknown", "trust_score": 80}]
+
+    def test_residential_excludes_unknown(self):
+        # 未知类型不应被误判为家宽，住宅模式下应丢弃
+        cfg = {"routing_mode": "auto", "routing_ip_type": "residential"}
+        out = m.apply_routing_filters(self._with_unknown(), cfg)
+        types = {n["ip_type"] for n in out}
+        self.assertNotIn("unknown", types)
+        self.assertNotIn("hosting", types)
+        self.assertIn("residential", types)
+
+    def test_hosting_excludes_unknown(self):
+        cfg = {"routing_mode": "auto", "routing_ip_type": "hosting"}
+        out = m.apply_routing_filters(self._with_unknown(), cfg)
+        self.assertEqual({n["ip_type"] for n in out}, {"hosting"})
+
+    def test_residential_include_unknown_keeps_unknown(self):
+        # 允许未知时（快速首连）未知与空类型都保留
+        cfg = {"routing_mode": "auto", "routing_ip_type": "residential"}
+        out = m.apply_routing_filters(self._with_unknown(), cfg, include_unknown_ip_type=True)
+        types = {n["ip_type"] for n in out}
+        self.assertIn("unknown", types)
+        self.assertIn("", types)
+
     def test_min_health_threshold(self):
         cfg = {"routing_mode": "auto", "routing_ip_type": "all", "min_health_score": 85}
         out = m.apply_routing_filters(self._nodes(), cfg)

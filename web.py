@@ -1519,6 +1519,7 @@ INDEX_HTML = r"""<!doctype html>
       <option value="">所有IP类型</option>
       <option value="residential">住宅IP</option>
       <option value="hosting">机房IP</option>
+      <option value="unknown">未知IP</option>
     </select>
     <select id="health_filter">
       <option value="all">全部健康度</option>
@@ -2087,7 +2088,7 @@ const translateQuality = q => {
 };
 
 const translateIpType = t => {
-  const dict = {"residential": "住宅 IP", "hosting": "机房 IP", "mobile": "移动网", "proxy": "代理 IP"};
+  const dict = {"residential": "住宅 IP", "hosting": "机房 IP", "mobile": "移动网", "proxy": "代理 IP", "unknown": "未知", "": "未检测"};
   return dict[t] || t || "-";
 };
 
@@ -2143,6 +2144,9 @@ function getFilteredNodes() {
         return false;
       }
       if (selectedIpType === "hosting" && n.ip_type !== "hosting") {
+        return false;
+      }
+      if (selectedIpType === "unknown" && n.ip_type && n.ip_type !== "unknown") {
         return false;
       }
     }
