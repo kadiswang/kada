@@ -4405,25 +4405,44 @@ function filterAndRenderLogs() {
 function copyLogContent() {
   const term = $("log_terminal_container");
   if (!term) return;
-  
+
   const text = term.innerText || term.textContent;
   if (!text || text.includes("暂无今日") || text.includes("暂无该类型")) {
     alert("当前没有可供复制的日志。");
     return;
   }
-  
-  navigator.clipboard.writeText(text).then(() => {
-    alert("日志内容已成功复制到剪贴板！");
-  }).catch(err => {
-    console.error("复制失败", err);
-    const ta = document.createElement("textarea");
-    ta.value = text;
-    document.body.appendChild(ta);
-    ta.select();
-    document.execCommand("copy");
-    document.body.removeChild(ta);
-    alert("日志内容已复制到剪贴板！");
-  });
+
+  function fallbackCopy() {
+    try {
+      const ta = document.createElement("textarea");
+      ta.value = text;
+      ta.style.position = "fixed";
+      ta.style.top = "0";
+      ta.style.left = "0";
+      ta.style.opacity = "0";
+      document.body.appendChild(ta);
+      ta.focus();
+      ta.select();
+      const ok = document.execCommand("copy");
+      document.body.removeChild(ta);
+      alert(ok ? "日志内容已复制到剪贴板！" : "复制失败，请手动选中日志后按 Ctrl+C 复制。");
+    } catch (e) {
+      console.error("复制失败", e);
+      alert("复制失败，请手动选中日志后按 Ctrl+C 复制。");
+    }
+  }
+
+  try {
+    if (navigator.clipboard && navigator.clipboard.writeText) {
+      navigator.clipboard.writeText(text).then(() => {
+        alert("日志内容已成功复制到剪贴板！");
+      }).catch(fallbackCopy);
+    } else {
+      fallbackCopy();
+    }
+  } catch (e) {
+    fallbackCopy();
+  }
 }
 
 function exportLogContent() {
