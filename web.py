@@ -1384,6 +1384,7 @@ INDEX_HTML = r"""<!doctype html>
     .health-fair { background: rgba(245, 158, 11, 0.15); color: #d97706; }
     .health-poor { background: rgba(239, 68, 68, 0.15); color: #dc2626; }
     .health-critical { background: rgba(127, 29, 29, 0.15); color: #991b1b; }
+    .health-unknown { background: rgba(148, 163, 184, 0.18); color: #64748b; }
     @media (max-width: 576px) { .vps-links { grid-template-columns: 1fr; } }
     @keyframes spin { from { transform: rotate(0deg); } to { transform: rotate(360deg); } }
     @keyframes modalFadeIn { from { transform: scale(0.97); opacity: 0; } to { transform: scale(1); opacity: 1; } }
@@ -2108,6 +2109,21 @@ function getHealthScore(n) {
   return Math.max(0, Math.min(100, trust));
 }
 
+// 从未查过 IP 情报的节点，健康度应显示"—"而不是 0，
+// 否则"没测过"和"确实很差"在界面上长得一模一样。
+function hasIpIntel(n) {
+  if (!n) return false;
+  return !!(n.ip_type || n.owner || n.as_name || n.location);
+}
+
+function healthCell(n) {
+  var s = getHealthScore(n);
+  if (!s && !hasIpIntel(n)) {
+    return '<span class="health-badge health-unknown" title="尚未查询 IP 情报">—</span>';
+  }
+  return '<span class="health-badge ' + getHealthClass(s) + '">' + s + '</span>';
+}
+
 function getHealthClass(score) {
   if (score >= 90) return "health-excellent";
   if (score >= 70) return "health-good";
@@ -2482,7 +2498,7 @@ function render(){
         <td style="white-space: nowrap; max-width: 110px; overflow: hidden; text-overflow: ellipsis; display: table-cell !important;" title="${esc(translateIpType(n.ip_type))}">${esc(translateIpType(n.ip_type))}</td>
         <td style="white-space: nowrap; display: table-cell !important;">${latencyText}</td>
         <td style="white-space: nowrap; display: table-cell !important;">
-          <span class="health-badge ${getHealthClass(getHealthScore(n))}">${getHealthScore(n)}</span>
+          ${healthCell(n)}
         </td>
         <td style="display: table-cell !important;">
           <div class="table-actions">
@@ -2577,7 +2593,7 @@ function renderOverviewNodes(activeNode) {
       '<td style="white-space:nowrap;overflow:hidden;text-overflow:ellipsis;display:table-cell!important;" title="' + esc(displayLocation) + '">' + esc(displayLocation) + '</td>' +
       '<td style="white-space:nowrap;display:table-cell!important;">' + esc(translateIpType(n.ip_type)) + '</td>' +
       '<td style="white-space:nowrap;display:table-cell!important;">' + latencyText + '</td>' +
-      '<td style="white-space:nowrap;display:table-cell!important;"><span class="health-badge ' + getHealthClass(getHealthScore(n)) + '">' + getHealthScore(n) + '</span></td>' +
+      '<td style="white-space:nowrap;display:table-cell!important;">' + healthCell(n) + '</td>' +
       '<td style="display:table-cell!important;">' + connectBtn + '</td>' +
       '</tr>';
   }).join("");
@@ -3510,7 +3526,7 @@ async function renderEgressNodeList() {
       '<td style="white-space:nowrap;overflow:hidden;text-overflow:ellipsis;display:table-cell!important;" title="' + esc(displayLocation) + '">' + esc(displayLocation) + '</td>' +
       '<td style="white-space:nowrap;display:table-cell!important;">' + esc(translateIpType(n.ip_type)) + '</td>' +
       '<td style="white-space:nowrap;display:table-cell!important;">' + latencyText + '</td>' +
-      '<td style="white-space:nowrap;display:table-cell!important;"><span class="health-badge ' + getHealthClass(getHealthScore(n)) + '">' + getHealthScore(n) + '</span></td>' +
+      '<td style="white-space:nowrap;display:table-cell!important;">' + healthCell(n) + '</td>' +
       '<td style="display:table-cell!important;">' + connectBtn + '</td>' +
       '</tr>';
   }).join("");

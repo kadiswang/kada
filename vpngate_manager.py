@@ -774,12 +774,16 @@ def test_node_by_id(node_id: str) -> dict[str, Any]:
             node["probe_message"] = message
             node["probed_at"] = time.time()
             if ok:
-                node["owner"] = temp_node["owner"]
-                node["asn"] = temp_node["asn"]
-                node["as_name"] = temp_node["as_name"]
-                node["location"] = temp_node["location"]
-                node["ip_type"] = temp_node["ip_type"]
-                node["quality"] = temp_node["quality"]
+                # 注意：必须把 enrich_ip_info 补出的字段整套回写，
+                # 漏掉 trust_score 会导致单独测速后"健康度"一直停在 0。
+                for _key in (
+                    "owner", "asn", "as_name", "location", "ip_type", "quality",
+                    "trust_score", "is_datacenter", "is_residential", "is_vpn",
+                    "is_proxy", "is_tor", "is_crawler", "is_abuser", "abuser_level",
+                ):
+                    if _key in temp_node:
+                        node[_key] = temp_node[_key]
+
             
             sorted_nodes = sort_all_nodes(nodes)
             write_json(NODES_FILE, sorted_nodes)
