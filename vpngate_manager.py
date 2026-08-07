@@ -7,6 +7,7 @@ import json
 import os
 import queue
 import re
+import secrets
 import shlex
 import signal
 import socket
@@ -121,7 +122,7 @@ from web import (
     LOGIN_HTML, INDEX_HTML,
     active_sessions,
     _cleanup_expired_sessions, _get_or_cleanup_sessions,
-    _check_login_rate_limit, _record_login_attempt,
+    _check_login_rate_limit, _record_login_attempt, _clear_login_attempts,
     _generate_csrf_token, _validate_csrf_token,
     session_cleanup_loop,
 )
@@ -1129,6 +1130,65 @@ def connect_node_async(node_id: str) -> str:
     threading.Thread(target=_runner, daemon=True).start()
     return "切换请求已受理，正在后台建立连接..."
 
+
+IP_TYPE_BACKFILL_LIMIT = 25
+
+
+def backfill_unknown_ip_types(limit: int = IP_TYPE_BACKFILL_LIMIT) -> int:
+    """为 IP 类型仍是"未检测/未知"的节点补查情报。
+
+    节点情报原本只在测速成功后才查询，导致从未测通的节点长期停留在未知状态，
+    进而在"住宅 IP"过滤下被误删。这里每轮维护补查一小批，逐步把节点池填满。
+    返回本次成功判定出类型的节点数。
+    """
+    try:
+        with lock:
+            nodes = read_nodes()
+        pending = [
+            n for n in nodes
+            if not n.get("ip_type") or n.get("ip_type") == "unknown"
+        ]
+        if not pending:
+            return 0
+        # 可用节点优先补查，其次是未测过的，最后才是已知不可用的
+        def _priority(node: dict[str, Any]) -> int:
+            status = node.get("probe_status")
+            if status == "available":
+                return 0
+            if status == "unavailable":
+                return 2
+            return 1
+
+        pending.sort(key=_priority)
+        batch = pending[:max(1, int(limit))]
+        vpn_utils.enrich_ip_info(batch, max_workers=4)
+
+        resolved = {
+            n.get("id"): n for n in batch
+            if n.get("ip_type") and n.get("ip_type") != "unknown"
+        }
+        if not resolved:
+            return 0
+        with lock:
+            current = read_nodes()
+            for n in current:
+                info = resolved.get(n.get("id"))
+                if info:
+                    for key in (
+                        "owner", "asn", "as_name", "location", "ip_type", "quality",
+                        "trust_score", "is_datacenter", "is_residential", "is_vpn",
+                        "is_proxy", "is_tor", "is_crawler", "is_abuser", "abuser_level",
+                    ):
+                        if key in info:
+                            n[key] = info[key]
+            write_json(NODES_FILE, current)
+        print(f"[IP 类型补查] 本轮补齐 {len(resolved)}/{len(batch)} 个节点", flush=True)
+        return len(resolved)
+    except Exception as exc:
+        print(f"[IP 类型补查] 失败: {exc}", flush=True)
+        return 0
+
+
 def maintain_valid_nodes(force: bool = False) -> str:
     global active_openvpn_process, active_openvpn_node_id, is_connecting
     ensure_dirs()
@@ -1306,10 +1366,13 @@ def maintain_valid_nodes(force: bool = False) -> str:
                             valid_nodes=valid_nodes_count,
                             last_refresh_at=time.time(),
                         )
+                        # 开启类型过滤时，先补齐"未知"类型，避免住宅节点因未查过而被误删
+                        if load_ui_config().get("routing_ip_type", "all") != "all":
+                            backfill_unknown_ip_types()
                         with lock:
                             final_nodes = read_nodes()
                             active_id = active_openvpn_node_id
-                            _ip_type_filter = state.get("routing_ip_type", "all")
+                            _ip_type_filter = load_ui_config().get("routing_ip_type", "all")
                             if _ip_type_filter == "all":
                                 filtered = list(final_nodes)
                             else:
@@ -1380,9 +1443,12 @@ def maintain_valid_nodes(force: bool = False) -> str:
                         if available_candidates:
                             auto_switch_node()
 
+            # 每轮维护补查一小批"未检测/未知"节点的 IP 类型，逐步把节点池信息填满
+            backfill_unknown_ip_types()
+
             final_nodes = read_nodes()
             active_id = active_openvpn_node_id
-            _ip_type_filter = state.get("routing_ip_type", "all")
+            _ip_type_filter = load_ui_config().get("routing_ip_type", "all")
             if _ip_type_filter == "all":
                 filtered = list(final_nodes)
             else:
@@ -2009,15 +2075,26 @@ class Handler(BaseHTTPRequestHandler):
             entries = deque(maxlen=200)
             if log_file.exists():
                 try:
+                    # 只读文件尾部：界面最多展示 200 条，没必要全量扫描。
+                    # 该读取持有全局锁（同一把锁还保护节点读写与连接状态），
+                    # 日志涨到几十 MB 后全量扫描会明显拖慢整个面板。
+                    tail_bytes = 512 * 1024
                     with lock:
-                        with open(log_file, "r", encoding="utf-8") as f:
-                            for line in f:
-                                line = line.strip()
-                                if line:
-                                    try:
-                                        entries.append(json.loads(line))
-                                    except Exception:
-                                        pass
+                        with open(log_file, "rb") as f:
+                            f.seek(0, 2)
+                            size = f.tell()
+                            f.seek(max(0, size - tail_bytes))
+                            raw = f.read()
+                    if size > tail_bytes:
+                        # 丢弃被截断的首行，避免解析出半条 JSON
+                        raw = raw.split(b"\n", 1)[-1]
+                    for line in raw.decode("utf-8", errors="replace").splitlines():
+                        line = line.strip()
+                        if line:
+                            try:
+                                entries.append(json.loads(line))
+                            except Exception:
+                                pass
                 except Exception as e:
                     print(f"[API Logs] Error reading log file: {e}", flush=True)
             self.send_json({"logs": list(entries), "total": len(entries), "tail": len(entries)})
@@ -2043,8 +2120,12 @@ class Handler(BaseHTTPRequestHandler):
                 expected_pwd = ui_cfg.get("password", "")
                 expected_uname = ui_cfg.get("username", "admin")
                 
-                if expected_pwd and input_pwd == expected_pwd and input_uname == expected_uname:
-                    _record_login_attempt(client_ip)
+                # 恒定时间比较，避免通过响应耗时逐字符爆破密码
+                pwd_ok = bool(expected_pwd) and secrets.compare_digest(input_pwd, str(expected_pwd))
+                user_ok = secrets.compare_digest(input_uname, str(expected_uname))
+                if pwd_ok and user_ok:
+                    # 登录成功即清空该 IP 的失败计数，避免正常用户被自己的成功登录挤到限流
+                    _clear_login_attempts(client_ip)
                     log_audit("LOGIN_SUCCESS", "Auth", f"用户 {expected_uname} 登录成功", expected_uname)
                     token = uuid.uuid4().hex
                     with lock:

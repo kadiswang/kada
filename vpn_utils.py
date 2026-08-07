@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 from __future__ import annotations
+import concurrent.futures
 import json
 import os
 import re
@@ -15,6 +16,10 @@ from typing import Any
 ROOT_DIR = Path(__file__).resolve().parent
 DATA_DIR = Path(os.environ["VPNGATE_DATA_DIR"]).resolve() if os.environ.get("VPNGATE_DATA_DIR") else ROOT_DIR / "vpngate_data"
 IP_CACHE_FILE = DATA_DIR / "ip_cache.json"
+
+# IP 情报缓存结构版本。判定规则变更时递增此值，
+# 旧版本缓存会被视为过期并自动重查，避免历史错误结论（如住宅 IP 被误判为未知）长期滞留。
+IP_CACHE_SCHEMA = 2
 
 ip_cache_lock = threading.RLock()
 
@@ -376,7 +381,7 @@ def save_ip_cache(cache: dict[str, dict[str, Any]]) -> None:
         except Exception:
             pass
 
-def enrich_ip_info(nodes: list[dict[str, Any]]) -> None:
+def enrich_ip_info(nodes: list[dict[str, Any]], max_workers: int = 1) -> None:
     # 1. Read cache thread-safely
     with ip_cache_lock:
         cache = load_ip_cache()
@@ -388,8 +393,14 @@ def enrich_ip_info(nodes: list[dict[str, Any]]) -> None:
         ip = node.get("ip") or node.get("remote_host")
         if not ip:
             continue
-        if ip in cache and now - cache[ip].get("cached_at", 0) < 7 * 24 * 3600:
-            cached = cache[ip]
+        cached_entry = cache.get(ip)
+        cache_fresh = (
+            isinstance(cached_entry, dict)
+            and cached_entry.get("schema") == IP_CACHE_SCHEMA
+            and now - cached_entry.get("cached_at", 0) < 7 * 24 * 3600
+        )
+        if cache_fresh:
+            cached = cached_entry
             node["owner"] = cached.get("owner", "")
             node["asn"] = cached.get("asn", "")
             node["as_name"] = cached.get("as_name", "")
@@ -413,16 +424,25 @@ def enrich_ip_info(nodes: list[dict[str, Any]]) -> None:
         return
 
     # 2. Query net.coffee per-IP (with fallback to ip-api.com)
-    new_entries = {}
-    for ip in ips_to_query:
+    def _lookup(ip: str):
         entry = query_ip_netcoffee(ip)
-        if entry:
-            new_entries[ip] = entry
-        else:
+        if not entry:
             # Fallback to ip-api.com
             entry = query_ip_api(ip)
+        return ip, entry
+
+    new_entries = {}
+    workers = max(1, int(max_workers))
+    if workers <= 1 or len(ips_to_query) <= 1:
+        for ip in ips_to_query:
+            _, entry = _lookup(ip)
             if entry:
                 new_entries[ip] = entry
+    else:
+        with concurrent.futures.ThreadPoolExecutor(max_workers=min(workers, len(ips_to_query))) as pool:
+            for ip, entry in pool.map(_lookup, ips_to_query):
+                if entry:
+                    new_entries[ip] = entry
 
     if not new_entries:
         return
@@ -468,12 +488,19 @@ def query_ip_netcoffee(ip: str) -> dict[str, Any] | None:
         if not isinstance(data, dict) or not data.get("ip"):
             return None
 
-        # 查不到明确标记时不臆测为家宽，归为 unknown，交由路由开关决定去留
+        # 注意：net.coffee 的住宅标记字段是驼峰 isResidential（不是 is_residential）
+        is_resi = bool(data.get("isResidential"))
+        company_type = str(data.get("company_type") or "").lower()
+
+        # 判定优先级：移动网 > 机房/代理/VPN > 住宅 > 未知
+        # 只有三类标记全都拿不到时才归 unknown，交由路由开关决定去留
         ip_type = "unknown"
         if data.get("is_mobile"):
             ip_type = "mobile"
         elif data.get("is_datacenter") or data.get("is_proxy") or data.get("is_vpn"):
             ip_type = "hosting"
+        elif is_resi or company_type in ("isp", "residential", "business", "education"):
+            ip_type = "residential"
 
         quality = "normal"
         if data.get("is_proxy"):
@@ -484,7 +511,7 @@ def query_ip_netcoffee(ip: str) -> dict[str, Any] | None:
             quality = "vpn"
         elif data.get("is_mobile"):
             quality = "mobile"
-        elif data.get("is_residential"):
+        elif is_resi:
             quality = "residential"
 
         country = data.get("country") or ""
@@ -501,7 +528,7 @@ def query_ip_netcoffee(ip: str) -> dict[str, Any] | None:
             "quality": quality,
             "trust_score": data.get("trust_score", 0),
             "is_datacenter": data.get("is_datacenter", False),
-            "is_residential": data.get("isResidential", False),
+            "is_residential": is_resi,
             "is_vpn": data.get("is_vpn", False),
             "is_proxy": data.get("is_proxy", False),
             "is_tor": data.get("is_tor", False),
@@ -509,6 +536,7 @@ def query_ip_netcoffee(ip: str) -> dict[str, Any] | None:
             "is_abuser": data.get("is_abuser", False),
             "abuser_level": (data.get("intelligence") or {}).get("abuser_level", ""),
             "cached_at": time.time(),
+            "schema": IP_CACHE_SCHEMA,
         }
     except Exception as e:
         print(f"[query_ip_netcoffee] {ip}: {e}", flush=True)
@@ -528,12 +556,18 @@ def query_ip_api(ip: str) -> dict[str, Any] | None:
         if not isinstance(data, dict) or data.get("status") != "success":
             return None
 
-        # 查不到明确标记时不臆测为家宽，归为 unknown，交由路由开关决定去留
+        # ip-api 没有独立的住宅标记，但它的 hosting 字段就是"数据中心/托管"判定。
+        # 三项都为假且能拿到 ISP 名称时，认定为普通民用宽带（住宅）。
+        isp_name = str(data.get("isp") or data.get("org") or "").strip()
+        is_resi = not data.get("hosting") and not data.get("proxy") and not data.get("mobile") and bool(isp_name)
+
         ip_type = "unknown"
         if data.get("mobile"):
             ip_type = "mobile"
         elif data.get("hosting") or data.get("proxy"):
             ip_type = "hosting"
+        elif is_resi:
+            ip_type = "residential"
 
         quality = "normal"
         if data.get("proxy"):
@@ -542,6 +576,8 @@ def query_ip_api(ip: str) -> dict[str, Any] | None:
             quality = "datacenter"
         elif data.get("mobile"):
             quality = "mobile"
+        elif is_resi:
+            quality = "residential"
 
         loc = " ".join(part for part in [data.get("country"), data.get("regionName"), data.get("city")] if part)
 
@@ -554,8 +590,7 @@ def query_ip_api(ip: str) -> dict[str, Any] | None:
             "quality": quality,
             "trust_score": max(0, 100 - (data.get("fraudScore") or 0)),
             "is_datacenter": bool(data.get("hosting")),
-            # ip-api 未提供住宅标记，未知不臆测为住宅
-            "is_residential": False,
+            "is_residential": is_resi,
             "is_vpn": False,
             "is_proxy": bool(data.get("proxy")),
             "is_tor": False,
@@ -563,6 +598,7 @@ def query_ip_api(ip: str) -> dict[str, Any] | None:
             "is_abuser": False,
             "abuser_level": "",
             "cached_at": time.time(),
+            "schema": IP_CACHE_SCHEMA,
         }
     except Exception as e:
         print(f"[query_ip_api] {ip}: {e}", flush=True)
