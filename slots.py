@@ -48,8 +48,16 @@ class SlotConfig:
     # 子进程重启后仍按该出口的独立配置运行。
 
     def is_single_slot_default(self) -> bool:
-        """是否为"单 Slot 现状"配置：fwmark=0 且 tun0 且 table 100。"""
-        return self.fwmark == 0 and self.tun_dev in ("", "tun0") and self.route_table in (0, BASE_ROUTE_TABLE)
+        """是否为"单 Slot 现状"配置：tun0 / table 100 / fwmark 0。
+
+        注意：-1 / 0 / "" 是"待编排器自动分配"的哨兵值，单 Slot 场景下它们
+        最终就会解析成 tun0 / table100 / fwmark0，因此同样视为默认配置。
+        """
+        return (
+            self.fwmark in (-1, 0)
+            and self.tun_dev in ("", "tun0")
+            and self.route_table in (0, BASE_ROUTE_TABLE)
+        )
 
 
 @dataclass

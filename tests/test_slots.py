@@ -21,11 +21,13 @@ class TestSingleSlotEquivalence(unittest.TestCase):
         cfg = result[0]
         self.assertEqual(cfg.slot_id, "default")
         self.assertEqual(cfg.region, "Japan")
-        self.assertEqual(cfg.tun_dev, "tun0")
-        self.assertEqual(cfg.route_table, 100)
-        self.assertEqual(cfg.fwmark, 0)
         self.assertEqual(cfg.proxy_port, 7928)
         self.assertTrue(cfg.enabled)
+        # tun/table/fwmark 一律留"自动分配"哨兵，由 SlotOrchestrator.sync()
+        # 按稳定编号分配（避免增删出口时编号漂移、抢占同一 tun 设备）。
+        self.assertEqual(cfg.tun_dev, "")
+        self.assertEqual(cfg.route_table, 0)
+        self.assertEqual(cfg.fwmark, -1)
 
     def test_single_slot_equals_current_behavior(self):
         ui_cfg = {"force_country": "United States", "proxy_port": 7928}
@@ -37,25 +39,42 @@ class TestSingleSlotEquivalence(unittest.TestCase):
         ui_cfg = {"force_country": ""}
         cfg = slots_from_ui_config(ui_cfg)[0]
         self.assertEqual(cfg.proxy_port, 7928)
-        self.assertEqual(cfg.tun_dev, "tun0")
-        self.assertEqual(cfg.fwmark, 0)
+        self.assertEqual(cfg.tun_dev, "")
+        self.assertEqual(cfg.fwmark, -1)
+        self.assertTrue(cfg.is_single_slot_default())
 
 
 class TestMultiSlotAllocation(unittest.TestCase):
     """多 Slot 资源必须自动分配且互不冲突。"""
 
-    def test_explicit_two_slots_distinct_resources(self):
+    def test_missing_resources_left_for_orchestrator(self):
+        """normalize() 不再按列表下标分配资源（下标分配会导致增删出口时编号漂移）。
+
+        缺失的资源必须原样留空，交给 SlotOrchestrator.sync() 按稳定编号分配。
+        """
         raw = [
             {"slot_id": "jp", "region": "Japan"},
             {"slot_id": "us", "region": "United States"},
         ]
         cfgs = SlotManager().normalize(raw)
         self.assertEqual(len(cfgs), 2)
-        # 自动分配：tun0/tun1, table 100/101, fwmark 0/1, port 7928/7929
-        self.assertEqual([c.tun_dev for c in cfgs], ["tun0", "tun1"])
-        self.assertEqual([c.route_table for c in cfgs], [100, 101])
-        self.assertEqual([c.fwmark for c in cfgs], [0, 1])
-        self.assertEqual([c.proxy_port for c in cfgs], [7928, 7929])
+        self.assertEqual([c.tun_dev for c in cfgs], ["", ""])
+        self.assertEqual([c.route_table for c in cfgs], [0, 0])
+        self.assertEqual([c.fwmark for c in cfgs], [-1, -1])
+        self.assertEqual([c.proxy_port for c in cfgs], [0, 0])
+
+    def test_persisted_resources_are_preserved(self):
+        """已写进配置的资源必须原样沿用，否则重启后出口编号会漂移。"""
+        raw = [
+            {"slot_id": "jp", "tun_dev": "tun3", "route_table": 103, "fwmark": 3, "proxy_port": 7931},
+            {"slot_id": "us", "region": "United States"},
+        ]
+        cfgs = SlotManager().normalize(raw)
+        self.assertEqual(cfgs[0].tun_dev, "tun3")
+        self.assertEqual(cfgs[0].route_table, 103)
+        self.assertEqual(cfgs[0].fwmark, 3)
+        self.assertEqual(cfgs[0].proxy_port, 7931)
+        self.assertEqual(cfgs[1].tun_dev, "")
 
     def test_auto_slot_id_when_missing(self):
         raw = [{"region": "Japan"}, {"region": "US"}]
@@ -70,21 +89,25 @@ class TestMultiSlotAllocation(unittest.TestCase):
         self.assertEqual(cfg.fwmark, 7)
         self.assertEqual(cfg.proxy_port, 8000)
 
-    def test_conflict_detected(self):
+    def test_conflict_does_not_raise_so_bad_config_can_self_heal(self):
+        """坏配置（重复资源）不能让加载直接失败，否则永远无法自愈。
+
+        normalize() 只告警并原样返回，由 SlotOrchestrator.sync() 检测并重新分配。
+        """
         raw = [
             {"slot_id": "a", "proxy_port": 8000},
             {"slot_id": "b", "proxy_port": 8000},
         ]
-        with self.assertRaises(ValueError):
-            SlotManager().normalize(raw)
+        cfgs = SlotManager().normalize(raw)
+        self.assertEqual([c.proxy_port for c in cfgs], [8000, 8000])
 
-    def test_conflict_detected_on_fwmark(self):
+    def test_conflict_on_fwmark_does_not_raise(self):
         raw = [
             {"slot_id": "a", "fwmark": 5},
             {"slot_id": "b", "fwmark": 5},
         ]
-        with self.assertRaises(ValueError):
-            SlotManager().normalize(raw)
+        cfgs = SlotManager().normalize(raw)
+        self.assertEqual([c.fwmark for c in cfgs], [5, 5])
 
 
 class TestVpnSlotRuntime(unittest.TestCase):

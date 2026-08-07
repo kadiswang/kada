@@ -52,6 +52,40 @@ def _record_login_attempt(ip: str) -> None:
         _login_attempts[ip].append(now)
 
 
+def _clear_login_attempts(ip: str) -> None:
+    """登录成功后清空该 IP 的失败记录。"""
+    with _login_attempts_lock:
+        _login_attempts.pop(ip, None)
+
+
+def _cleanup_login_attempts() -> None:
+    """回收过期的限流记录。
+
+    面板默认监听所有网卡，公网扫描器会持续用不同源 IP 打 /api/login；
+    若只裁剪列表而不删除空的 IP 键，_login_attempts 会无上限增长（内存泄漏）。
+    """
+    now = time.time()
+    with _login_attempts_lock:
+        for ip in list(_login_attempts.keys()):
+            kept = [t for t in _login_attempts[ip] if now - t < LOGIN_RATE_LIMIT_WINDOW]
+            if kept:
+                _login_attempts[ip] = kept
+            else:
+                _login_attempts.pop(ip, None)
+
+
+def _cleanup_expired_csrf_tokens() -> None:
+    """回收过期 CSRF 令牌。
+
+    原逻辑只在"校验时发现过期"才删除；从未被使用过的令牌（每次刷新页面都会
+    新发一个）会永久驻留内存。长期运行的服务需要定期清理。
+    """
+    now = time.time()
+    with _csrf_lock:
+        for token in [t for t, (exp, _) in _csrf_tokens.items() if exp <= now]:
+            _csrf_tokens.pop(token, None)
+
+
 def _generate_csrf_token() -> str:
     token = uuid.uuid4().hex + uuid.uuid4().hex
     with _csrf_lock:
@@ -4504,3 +4538,5 @@ def session_cleanup_loop() -> None:
     while True:
         time.sleep(SESSION_CLEANUP_INTERVAL)
         _cleanup_expired_sessions()
+        _cleanup_expired_csrf_tokens()
+        _cleanup_login_attempts()

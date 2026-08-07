@@ -23,7 +23,7 @@ import time
 from pathlib import Path
 from typing import Any
 
-from slots import SlotManager
+from slots import SlotManager, BASE_PROXY_PORT
 
 MANAGER_MAIN = Path(__file__).resolve().parent / "vpngate_manager.py"
 
@@ -281,7 +281,7 @@ class RegionProcess:
 class SlotOrchestrator:
     """按 ui_cfg.slots 启动/停止/监控各地区子进程。"""
 
-    def __init__(self, base_data_dir: Path, base_ui_port: int, base_proxy_port: int = 8790) -> None:
+    def __init__(self, base_data_dir: Path, base_ui_port: int, base_proxy_port: int = BASE_PROXY_PORT) -> None:
         self.base_data_dir = Path(base_data_dir)
         self.base_ui_port = base_ui_port
         self.base_proxy_port = base_proxy_port
@@ -358,7 +358,7 @@ class SlotOrchestrator:
             used_idx.add(next_idx)
             next_idx += 1
             print(
-                f"[sync] 为 {c.slot_id} 分配资源: tun{c.fwmark}/table{c.route_table}/"
+                f"[sync] 为 {c.slot_id} 分配资源: {c.tun_dev}/table{c.route_table}/"
                 f"fwmark{c.fwmark}/proxy{c.proxy_port}",
                 flush=True,
             )
@@ -396,8 +396,15 @@ class SlotOrchestrator:
             if not cfg.enabled:
                 continue
             existing = self.regions.get(cfg.slot_id)
-            new_ui_port = self._ui_port_for(idx)
-            new_proxy_port = cfg.proxy_port if cfg.proxy_port else self._proxy_port_for(idx)
+            # 管理端口必须绑定"稳定编号"(tun{n} 里的 n)，绝不能用列表下标 idx。
+            # 否则删除中间某个出口后，后面出口的 idx 会整体前移，父进程记录的
+            # ui_port 与子进程实际监听端口错位——轻则出口卡片显示离线，重则
+            # 父进程把请求发到"另一个出口"的进程上（保存设置/切换节点串台）。
+            stable_idx = _slot_index(cfg.tun_dev)
+            if stable_idx is None:
+                stable_idx = idx
+            new_ui_port = self._ui_port_for(stable_idx)
+            new_proxy_port = cfg.proxy_port if cfg.proxy_port else self._proxy_port_for(stable_idx)
             if existing is None:
                 rp = RegionProcess(cfg, self.base_data_dir, new_ui_port, new_proxy_port)
                 rp.start()
@@ -408,11 +415,21 @@ class SlotOrchestrator:
                 rp = RegionProcess(cfg, self.base_data_dir, new_ui_port, new_proxy_port)
                 rp.start()
                 self.regions[cfg.slot_id] = rp
+            elif existing.ui_port != new_ui_port or existing.proxy_port != new_proxy_port:
+                # 端口发生变化：子进程仍在用启动时的旧端口监听，只改父进程记录
+                # 会造成父子错位，必须重启子进程才能真正生效。
+                print(
+                    f"[sync] {cfg.slot_id} 端口变化 (ui {existing.ui_port}->{new_ui_port}, "
+                    f"proxy {existing.proxy_port}->{new_proxy_port})，重启该子出口",
+                    flush=True,
+                )
+                existing.stop()
+                rp = RegionProcess(cfg, self.base_data_dir, new_ui_port, new_proxy_port)
+                rp.start()
+                self.regions[cfg.slot_id] = rp
             else:
-                # 进程还活着：同步最新配置资源，避免删除/新增 slot 后资源错位
+                # 进程还活着且端口未变：仅同步最新配置对象
                 existing.cfg = cfg
-                existing.proxy_port = new_proxy_port
-                existing.ui_port = new_ui_port
 
         # 给子进程一点启动时间，然后检查是否立即崩溃，如是则记录日志便于排查
         time.sleep(0.3)

@@ -110,17 +110,21 @@ class TestAggregateEgress(unittest.TestCase):
         self.assertEqual(out[0]["proxy_port"], 7928)
 
     def test_aggregate_includes_child_status(self):
+        """出口列表以持久化配置(ui_cfg.slots)为准；编排器在线时叠加子进程详细状态。"""
         child_entry = {"proxy_port": 7929, "alive": True, "routing_mode": "auto"}
         orch = mock.Mock()
         rp = mock.Mock()
         rp.cfg.slot_id = "egress_1"
         rp.proxy_port = 7929
-        rp.ui_port = 8890
+        rp.ui_port = 8891
         orch.regions = {"egress_1": rp}
+        ui_cfg = {"slots": [{"slot_id": "egress_1", "name": "日本出口", "proxy_port": 7929}]}
         old = vm.EGRESS_ORCH
         vm.EGRESS_ORCH = orch
         try:
             with mock.patch.object(vm, "get_instance_egress_status", return_value={"proxy_port": 7928, "alive": True}), \
+                 mock.patch.object(vm, "_cached_load_ui_config", return_value=ui_cfg), \
+                 mock.patch.object(vm, "_quick_proxy_listen", return_value=True), \
                  mock.patch.object(vm.urllib.request, "urlopen", side_effect=lambda req, timeout=None: _Resp(child_entry)):
                 out = vm.aggregate_egress_status()
         finally:
@@ -128,7 +132,30 @@ class TestAggregateEgress(unittest.TestCase):
         self.assertEqual(len(out), 2)
         child = [e for e in out if not e["is_default"]][0]
         self.assertEqual(child["proxy_port"], 7929)
+        self.assertEqual(child["name"], "日本出口")
         self.assertTrue(child["alive"])
+        self.assertEqual(child["routing_mode"], "auto")
+
+    def test_aggregate_lists_configured_egress_even_without_orchestrator(self):
+        """回归保护：编排器未启动时，已配置的出口也必须出现在列表里。
+
+        这正是历史上"出站管理不能添加"的根因——旧逻辑只在 EGRESS_ORCH 存活时
+        才列出子出口，导致新建出口写进了配置却永远不显示。
+        """
+        ui_cfg = {"slots": [{"slot_id": "egress_1", "proxy_port": 7929}]}
+        old = vm.EGRESS_ORCH
+        vm.EGRESS_ORCH = None
+        try:
+            with mock.patch.object(vm, "get_instance_egress_status", return_value={"proxy_port": 7928, "alive": True}), \
+                 mock.patch.object(vm, "_cached_load_ui_config", return_value=ui_cfg), \
+                 mock.patch.object(vm, "_quick_proxy_listen", return_value=False):
+                out = vm.aggregate_egress_status()
+        finally:
+            vm.EGRESS_ORCH = old
+        self.assertEqual(len(out), 2)
+        child = [e for e in out if not e["is_default"]][0]
+        self.assertEqual(child["slot_id"], "egress_1")
+        self.assertFalse(child["alive"])  # 未启动 -> 标红，但仍可见可管理
 
 
 class TestGetInstanceEgressStatusExtended(unittest.TestCase):

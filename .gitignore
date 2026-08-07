@@ -57,7 +57,8 @@ KADA_Analysis_ZH.md
 # ---- 临时和测试文件 ----
 scratch/
 *连接配置*
-test_*.py
+# 只忽略仓库根目录下的临时试验脚本；tests/ 里的正式用例必须入库
+/test_*.py
 *.bak
 *.orig
 
@@ -65,3 +66,8 @@ test_*.py
 .DS_Store
 Thumbs.db
 Desktop.ini
+
+# 本地工作区与审查报告（不入库）
+.workbuddy/
+全量审查报告_功能质量测试.md
+安全审查报告.md
