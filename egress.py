@@ -42,7 +42,12 @@ def _quick_proxy_listen(port: int) -> bool:
 
 
 def egress_forward(ui_port: int, path: str, payload: dict) -> dict:
-    """以服务端身份把配置转发到某个子出口进程（绕过浏览器跨域与鉴权）。"""
+    """以服务端身份把配置转发到某个子出口进程（绕过浏览器跨域与鉴权）。
+
+    子进程可能尚未启动或正在重启，这里把所有网络异常吞掉并返回
+    {"ok": False, "error": "..."}，避免父进程接口因此抛 500；
+    调用方可以决定是否阻断持久化保存。
+    """
     base = f"http://127.0.0.1:{ui_port}"
     token = None
     try:
@@ -56,8 +61,14 @@ def egress_forward(ui_port: int, path: str, payload: dict) -> dict:
         headers={"Content-Type": "application/json", "X-CSRF-Token": token or ""},
         method="POST",
     )
-    with urllib.request.urlopen(req, timeout=5) as r:
-        return json.loads(r.read().decode("utf-8"))
+    try:
+        with urllib.request.urlopen(req, timeout=5) as r:
+            return json.loads(r.read().decode("utf-8"))
+    except urllib.error.URLError as exc:
+        err = str(exc.reason) if hasattr(exc, "reason") else str(exc)
+        return {"ok": False, "error": f"子出口通信失败: {err}"}
+    except Exception as exc:
+        return {"ok": False, "error": f"子出口通信失败: {exc}"}
 
 
 def _build_egress_regions(ui_cfg: dict) -> list:
