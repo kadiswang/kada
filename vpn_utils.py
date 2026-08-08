@@ -19,7 +19,7 @@ IP_CACHE_FILE = DATA_DIR / "ip_cache.json"
 
 # IP 情报缓存结构版本。判定规则变更时递增此值，
 # 旧版本缓存会被视为过期并自动重查，避免历史错误结论（如住宅 IP 被误判为未知）长期滞留。
-IP_CACHE_SCHEMA = 2
+IP_CACHE_SCHEMA = 3
 
 ip_cache_lock = threading.RLock()
 
@@ -381,7 +381,51 @@ def save_ip_cache(cache: dict[str, dict[str, Any]]) -> None:
         except Exception:
             pass
 
-def enrich_ip_info(nodes: list[dict[str, Any]], max_workers: int = 1) -> None:
+# 情报条目里需要回写到节点上的字段清单。
+# 单独抽出来是因为以前这份清单在多处手抄，漏抄一个字段就会出现
+# "批量测速能刷新、单节点测速却不刷新"这类难查的 bug。
+INTEL_FIELDS: tuple[str, ...] = (
+    "owner", "asn", "as_name", "location", "ip_type", "quality",
+    "trust_score", "is_datacenter", "is_residential", "is_vpn", "is_proxy",
+    "is_tor", "is_crawler", "is_abuser", "abuser_level",
+    # proxycheck.io 补充的风控维度
+    "risk_score", "is_flagged_proxy", "flagged_type", "subnet_devices", "rdns",
+)
+
+_INTEL_DEFAULTS: dict[str, Any] = {
+    "trust_score": 0,
+    "is_datacenter": False,
+    "is_residential": False,
+    "is_vpn": False,
+    "is_proxy": False,
+    "is_tor": False,
+    "is_crawler": False,
+    "is_abuser": False,
+    "is_flagged_proxy": False,
+    "risk_score": None,
+    "subnet_devices": None,
+}
+
+
+def apply_intel_to_node(node: dict[str, Any], entry: dict[str, Any]) -> None:
+    """把一条情报结果整套写入节点，并算出方向统一的综合健康度。"""
+    for field in INTEL_FIELDS:
+        node[field] = entry.get(field, _INTEL_DEFAULTS.get(field, ""))
+    node["health_score"] = compute_health_score(
+        entry.get("trust_score"), entry.get("risk_score")
+    )
+
+
+def enrich_ip_info(
+    nodes: list[dict[str, Any]],
+    max_workers: int = 1,
+    proxycheck_key: str | None = None,
+) -> None:
+    """补齐节点的 IP 情报。
+
+    proxycheck_key 传入非 None 即表示启用 proxycheck.io 风控查询
+    （空串代表匿名调用，走免费额度）。传 None 则完全不碰这个源。
+    """
     # 1. Read cache thread-safely
     with ip_cache_lock:
         cache = load_ip_cache()
@@ -400,22 +444,7 @@ def enrich_ip_info(nodes: list[dict[str, Any]], max_workers: int = 1) -> None:
             and now - cached_entry.get("cached_at", 0) < 7 * 24 * 3600
         )
         if cache_fresh:
-            cached = cached_entry
-            node["owner"] = cached.get("owner", "")
-            node["asn"] = cached.get("asn", "")
-            node["as_name"] = cached.get("as_name", "")
-            node["location"] = cached.get("location", "")
-            node["ip_type"] = cached.get("ip_type", "")
-            node["quality"] = cached.get("quality", "")
-            node["trust_score"] = cached.get("trust_score", 0)
-            node["is_datacenter"] = cached.get("is_datacenter", False)
-            node["is_residential"] = cached.get("is_residential", False)
-            node["is_vpn"] = cached.get("is_vpn", False)
-            node["is_proxy"] = cached.get("is_proxy", False)
-            node["is_tor"] = cached.get("is_tor", False)
-            node["is_crawler"] = cached.get("is_crawler", False)
-            node["is_abuser"] = cached.get("is_abuser", False)
-            node["abuser_level"] = cached.get("abuser_level", "")
+            apply_intel_to_node(node, cached_entry)
         else:
             if ip not in ips_to_query:
                 ips_to_query.append(ip)
@@ -447,6 +476,16 @@ def enrich_ip_info(nodes: list[dict[str, Any]], max_workers: int = 1) -> None:
     if not new_entries:
         return
 
+    # 2.5 可选：叠加 proxycheck.io 的风控维度（失败不影响主情报）
+    if proxycheck_key is not None:
+        try:
+            risk_map = query_proxycheck_batch(list(new_entries.keys()), proxycheck_key)
+            for ip, extra in risk_map.items():
+                if ip in new_entries:
+                    new_entries[ip].update(extra)
+        except Exception as e:
+            print(f"[proxycheck] 叠加失败，忽略: {e}", flush=True)
+
     # 3. Save cache thread-safely
     with ip_cache_lock:
         cache = load_ip_cache()
@@ -457,22 +496,7 @@ def enrich_ip_info(nodes: list[dict[str, Any]], max_workers: int = 1) -> None:
     for node in nodes:
         ip = node.get("ip") or node.get("remote_host")
         if ip in new_entries:
-            cached = new_entries[ip]
-            node["owner"] = cached.get("owner", "")
-            node["asn"] = cached.get("asn", "")
-            node["as_name"] = cached.get("as_name", "")
-            node["location"] = cached.get("location", "")
-            node["ip_type"] = cached.get("ip_type", "")
-            node["quality"] = cached.get("quality", "")
-            node["trust_score"] = cached.get("trust_score", 0)
-            node["is_datacenter"] = cached.get("is_datacenter", False)
-            node["is_residential"] = cached.get("is_residential", False)
-            node["is_vpn"] = cached.get("is_vpn", False)
-            node["is_proxy"] = cached.get("is_proxy", False)
-            node["is_tor"] = cached.get("is_tor", False)
-            node["is_crawler"] = cached.get("is_crawler", False)
-            node["is_abuser"] = cached.get("is_abuser", False)
-            node["abuser_level"] = cached.get("abuser_level", "")
+            apply_intel_to_node(node, new_entries[ip])
 
 
 def query_ip_netcoffee(ip: str) -> dict[str, Any] | None:
@@ -603,6 +627,104 @@ def query_ip_api(ip: str) -> dict[str, Any] | None:
     except Exception as e:
         print(f"[query_ip_api] {ip}: {e}", flush=True)
         return None
+
+
+# ---------------------------------------------------------------------------
+# proxycheck.io —— 风控黑名单维度（是否会被目标网站当代理拦截）
+#
+# 注意方向问题：net.coffee 的 trust_score 是"信誉分"，越高越好；
+# proxycheck 的 risk 是"风险分"，越高越危险。两者方向相反，
+# 因此这里统一在 compute_health_score() 里翻转成"越高越好"再合并，
+# 界面上只呈现一个方向一致的综合健康度，避免用户对着两个相反的数字犯迷糊。
+# ---------------------------------------------------------------------------
+
+PROXYCHECK_BATCH_SIZE = 25
+
+
+def compute_health_score(trust_score: Any, risk_score: Any) -> int | None:
+    """把两个方向相反的第三方分数统一成"越高越好"的综合健康度（0-100）。
+
+    - trust_score：net.coffee 信誉分，高 = 可信，直接采用。
+    - risk_score ：proxycheck 风险分，高 = 危险，翻转为 100 - risk。
+    - 两者都有时取更保守（更低）的一方：只要有任一情报源认为这个 IP 有问题，
+      就按有问题算，避免单一源漏判导致用户选到已被风控拉黑的节点。
+    - 都没有则返回 None，界面显示"—"而不是 0（"没查过"不等于"很差"）。
+    """
+    parts: list[int] = []
+    if trust_score is not None and trust_score != "":
+        try:
+            parts.append(max(0, min(100, int(trust_score))))
+        except (TypeError, ValueError):
+            pass
+    if risk_score is not None and risk_score != "":
+        try:
+            parts.append(max(0, min(100, 100 - int(risk_score))))
+        except (TypeError, ValueError):
+            pass
+    if not parts:
+        return None
+    return min(parts)
+
+
+def query_proxycheck_batch(ips: list[str], api_key: str = "") -> dict[str, dict[str, Any]]:
+    """批量查询 proxycheck.io，返回 {ip: {risk_score, is_flagged_proxy, ...}}。
+
+    免费匿名 100 次/天，带免费 key 1000 次/天；一次 POST 可问多个 IP 且只计一次配额，
+    所以这里走批量接口，尽量省额度。任何失败都静默返回已取到的部分，
+    绝不影响主情报源的结果。
+    """
+    result: dict[str, dict[str, Any]] = {}
+    targets = [ip for ip in ips if ip]
+    if not targets:
+        return result
+
+    for start in range(0, len(targets), PROXYCHECK_BATCH_SIZE):
+        chunk = targets[start:start + PROXYCHECK_BATCH_SIZE]
+        try:
+            query = {"vpn": "1", "asn": "1", "risk": "1"}
+            if api_key:
+                query["key"] = api_key
+            url = "https://proxycheck.io/v2/?" + urllib.parse.urlencode(query)
+            body = urllib.parse.urlencode({"ips": ",".join(chunk)}).encode("utf-8")
+            request = urllib.request.Request(
+                url,
+                data=body,
+                headers={
+                    "User-Agent": "Mozilla/5.0 (compatible; kada/2.2)",
+                    "Content-Type": "application/x-www-form-urlencoded",
+                },
+            )
+            with urllib.request.urlopen(request, timeout=15) as response:
+                data = json.loads(response.read().decode("utf-8", errors="replace"))
+            if not isinstance(data, dict):
+                continue
+            if str(data.get("status") or "").lower() in ("denied", "error"):
+                print(f"[proxycheck] 被拒绝：{data.get('message') or data.get('status')}", flush=True)
+                break
+            for ip in chunk:
+                entry = data.get(ip)
+                if not isinstance(entry, dict):
+                    continue
+                devices = entry.get("devices") or {}
+                try:
+                    risk = int(entry.get("risk"))
+                except (TypeError, ValueError):
+                    risk = None
+                try:
+                    subnet_devices = int(devices.get("subnet"))
+                except (TypeError, ValueError):
+                    subnet_devices = None
+                result[ip] = {
+                    "risk_score": risk,
+                    "is_flagged_proxy": str(entry.get("proxy") or "").lower() == "yes",
+                    "flagged_type": entry.get("type") or "",
+                    "subnet_devices": subnet_devices,
+                    "rdns": entry.get("hostname") or "",
+                }
+        except Exception as e:
+            print(f"[proxycheck] 批量查询失败: {e}", flush=True)
+            break
+    return result
 
 
 def diagnose_api_failure(api_url: str = "https://www.vpngate.net/api/iphone/") -> tuple[int, str]:

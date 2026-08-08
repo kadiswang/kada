@@ -423,9 +423,25 @@ def apply_routing_filters(
 
     min_health = ui_cfg.get("min_health_score", 0)
     if min_health > 0:
-        candidates = [n for n in candidates if (n.get("trust_score") or 0) >= min_health]
+        candidates = [n for n in candidates if effective_health_score(n) >= min_health]
 
     return candidates
+
+
+def effective_health_score(node: dict[str, Any]) -> int:
+    """节点的综合健康度，0-100，越高越好。
+
+    优先用 health_score（已把 proxycheck 的"风险分"翻转后与信誉分合并，
+    方向统一为越高越好）；旧数据没有该字段时回退到 trust_score。
+    查不到情报按 0 处理，与旧行为保持一致。
+    """
+    value = node.get("health_score")
+    if value is None or value == "":
+        value = node.get("trust_score")
+    try:
+        return max(0, min(100, int(value)))
+    except (TypeError, ValueError):
+        return 0
 
 
 def normalized_country_name(country: Any) -> str:
@@ -468,7 +484,7 @@ def validate_node_allowed_by_routing(node: dict[str, Any], ui_cfg: dict[str, Any
         raise RuntimeError("当前已锁定机房 IP 出站，不能连接非机房节点")
 
     min_health = ui_cfg.get("min_health_score", 0)
-    if min_health > 0 and (node.get("trust_score") or 0) < min_health:
+    if min_health > 0 and effective_health_score(node) < min_health:
         raise RuntimeError(f"当前要求 IP 健康度 ≥{min_health}，该节点不满足")
 
 
@@ -528,7 +544,7 @@ def select_best_node(
         cands = [n for n in cands if n.get("ip_type") == "hosting"]
 
     if min_health > 0:
-        cands = [n for n in cands if (n.get("trust_score") or 0) >= min_health]
+        cands = [n for n in cands if effective_health_score(n) >= min_health]
 
     available = [n for n in cands if n.get("probe_status") == "available"]
     available.sort(key=probe_priority_key)

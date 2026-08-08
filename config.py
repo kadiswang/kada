@@ -60,6 +60,9 @@ def load_ui_config() -> dict[str, Any]:
             "favorite_node_ids": [],
             "fav_fail_fallback": True,
             "upstream_proxy": {"enabled": False},
+            # proxycheck.io 风控情报（全局：所有出口共用同一份节点池，故不分出口）
+            # api_key 留空则走匿名免费额度（约 100 次/天）
+            "proxycheck": {"enabled": False, "api_key": ""},
         }
         updated = False
         if auth_file.exists():
@@ -67,7 +70,7 @@ def load_ui_config() -> dict[str, Any]:
                 data = json.loads(auth_file.read_text(encoding="utf-8"))
                 for key, val in data.items():
                     config[key] = val
-                for key in ["host", "port", "proxy_port", "routing_mode", "force_country", "routing_ip_type", "min_health_score", "connection_enabled", "fixed_node_id", "favorite_node_ids", "fav_fail_fallback", "upstream_proxy"]:
+                for key in ["host", "port", "proxy_port", "routing_mode", "force_country", "routing_ip_type", "min_health_score", "connection_enabled", "fixed_node_id", "favorite_node_ids", "fav_fail_fallback", "upstream_proxy", "proxycheck"]:
                     if key not in data:
                         updated = True
             except Exception:

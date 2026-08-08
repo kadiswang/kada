@@ -1781,6 +1781,34 @@ INDEX_HTML = r"""<!doctype html>
           </div>
         </div>
 
+        <div style="border-top: 1px dashed var(--border); padding-top: 16px; margin-bottom: 4px;">
+          <label style="font-size: 13px; font-weight: 600; color: var(--text-primary); margin-bottom: 8px; display: flex; align-items: center; gap: 6px;">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="width:16px;height:16px;color:var(--primary)"><path d="M12 3l7 4v5c0 4.4-3 8.4-7 9-4-.6-7-4.6-7-9V7l7-4z"/><path d="M9 12l2 2 4-4"/></svg>
+            风控情报增强（proxycheck.io）
+          </label>
+          <p class="form-hint" style="font-size: 11px; color: var(--text-muted); margin-bottom: 12px; line-height: 1.5;">
+            额外查询节点 IP 是否已被各大网站的风控库拉黑，以及同网段有多少人在挤。
+            开启后「健康度」会同时参考这项，被标记的节点分数会自动降下来。<br>
+            不填密钥也能用（约 100 次/天）；到
+            <a href="https://proxycheck.io/" target="_blank" rel="noopener noreferrer" style="color: var(--primary);">proxycheck.io</a>
+            免费注册可提升到 1000 次/天。
+          </p>
+
+          <div class="form-group" style="margin-bottom: 12px;">
+            <label class="form-label" for="net_proxycheck_enabled">启用风控情报</label>
+            <input type="checkbox" id="net_proxycheck_enabled" style="width:16px;height:16px;accent-color:var(--primary);" onchange="toggleProxycheckFields()">
+          </div>
+
+          <div id="proxycheck_fields" style="display:none;">
+            <div class="form-group" style="margin-bottom: 12px;">
+              <label class="form-label" for="net_proxycheck_key">API 密钥（可选）</label>
+              <input type="password" id="net_proxycheck_key" class="input-field" placeholder="留空则匿名调用" autocomplete="new-password">
+              <p class="form-hint" id="net_proxycheck_key_hint" style="font-size: 11px; color: var(--text-muted); margin-top: 6px; line-height: 1.4;">留空则匿名调用免费额度。</p>
+              <input type="hidden" id="net_proxycheck_key_cleared" value="0">
+            </div>
+          </div>
+        </div>
+
         <div style="border-top: 1px dashed var(--border); padding-top: 16px; margin-bottom: 16px;">
           <div class="form-group" style="margin-bottom: 16px;">
             <label class="form-label">IP 出站路由模式</label>
@@ -2102,11 +2130,17 @@ const base=p=>(p||"").split(/[\\/]/).pop();
 function time(ts){return ts?new Date(ts*1000).toLocaleString():"从未"}
 function speed(v){return v?`${(v*8/1000/1000).toFixed(1)} Mbps`:"-"}
 
-// IP Health Score: directly use net.coffee trust_score (0-100)
+// 综合健康度（0-100，统一"越高越好"）。
+// 两个情报源方向相反：net.coffee 的 trust_score 高=可信，
+// proxycheck 的 risk 高=危险。后端已把 risk 翻转成 100-risk 并与信誉分
+// 取更保守的一方，结果存在 health_score。这里优先用它，旧数据回退 trust_score。
 function getHealthScore(n) {
   if (!n) return 0;
-  const trust = parseInt(n.trust_score) || 0;
-  return Math.max(0, Math.min(100, trust));
+  var v = (n.health_score === null || n.health_score === undefined || n.health_score === "")
+    ? n.trust_score : n.health_score;
+  var s = parseInt(v);
+  if (isNaN(s)) return 0;
+  return Math.max(0, Math.min(100, s));
 }
 
 // 从未查过 IP 情报的节点，健康度应显示"—"而不是 0，
@@ -2116,12 +2150,41 @@ function hasIpIntel(n) {
   return !!(n.ip_type || n.owner || n.as_name || n.location);
 }
 
+// 悬停说明：把两个方向相反的原始分摊开讲清楚，避免用户对着两个数字犯迷糊
+function healthTitle(n) {
+  if (!n) return "";
+  var lines = [];
+  var trust = parseInt(n.trust_score);
+  if (!isNaN(trust)) lines.push("信誉分 " + trust + "/100（越高越好）");
+  var risk = parseInt(n.risk_score);
+  if (!isNaN(risk)) {
+    lines.push("风控风险分 " + risk + "/100（越低越好，已折算为 " + (100 - risk) + "）");
+    lines.push(n.is_flagged_proxy
+      ? "⚠ 已被风控库标记为" + (n.flagged_type || "代理") + "，访问部分网站可能被拦"
+      : "未被风控库标记");
+  }
+  var dev = parseInt(n.subnet_devices);
+  if (!isNaN(dev)) lines.push("同网段约 " + dev + " 台设备在用" + (dev >= 100 ? "（较拥挤）" : ""));
+  if (n.rdns) lines.push("反查域名 " + n.rdns);
+  if (!lines.length) return "尚未查询 IP 情报";
+  lines.push("综合取两者中更保守的一项");
+  return lines.join("\n");
+}
+
 function healthCell(n) {
   var s = getHealthScore(n);
   if (!s && !hasIpIntel(n)) {
     return '<span class="health-badge health-unknown" title="尚未查询 IP 情报">—</span>';
   }
-  return '<span class="health-badge ' + getHealthClass(s) + '">' + s + '</span>';
+  var flag = (n && n.is_flagged_proxy)
+    ? '<span title="已被风控库标记为代理" style="margin-left:4px;color:var(--danger);font-size:11px;">⚠</span>'
+    : '';
+  var dev = parseInt(n && n.subnet_devices);
+  var crowd = (!isNaN(dev) && dev >= 100)
+    ? '<span title="同网段约 ' + dev + ' 台设备共用，可能较慢" style="margin-left:4px;color:var(--text-muted);font-size:11px;">' + dev + '人</span>'
+    : '';
+  return '<span class="health-badge ' + getHealthClass(s) + '" title="' + escAttr(healthTitle(n)) + '">'
+    + s + '</span>' + flag + crowd;
 }
 
 function getHealthClass(score) {
@@ -4077,6 +4140,26 @@ function setNetEgress() {
     $("net_upstream_pass").value = up.pass || "";
   }
 
+  // 风控情报（全局配置，同样从 state 读取）
+  const pc = (state && state.proxycheck) || {};
+  const pcEnabled = $("net_proxycheck_enabled");
+  if (pcEnabled) {
+    pcEnabled.checked = !!pc.enabled;
+    toggleProxycheckFields();
+    // 密钥不回显（后端只回传 key_set 标记），留空提交视为不改动
+    const keyEl = $("net_proxycheck_key");
+    if (keyEl) keyEl.value = "";
+    const clearedEl = $("net_proxycheck_key_cleared");
+    if (clearedEl) clearedEl.value = "0";
+    const hint = $("net_proxycheck_key_hint");
+    if (hint) {
+      hint.innerHTML = pc.key_set
+        ? '已保存密钥（不显示）。留空提交则保持不变，'
+          + '<a href="javascript:void(0)" onclick="clearProxycheckKey()" style="color:var(--danger);">点此清除改回匿名</a>。'
+        : "留空则匿名调用免费额度。";
+    }
+  }
+
   // 端口（仅展示，不可改）
   $("net_proxy_port").value = e.proxy_port || 7928;
 }
@@ -4088,6 +4171,21 @@ function closeNetworkModal() {
 function toggleUpstreamFields() {
   const enabled = $("net_upstream_enabled").checked;
   $("upstream_proxy_fields").style.display = enabled ? "block" : "none";
+}
+
+function toggleProxycheckFields() {
+  const el = $("net_proxycheck_enabled");
+  const box = $("proxycheck_fields");
+  if (el && box) box.style.display = el.checked ? "block" : "none";
+}
+
+function clearProxycheckKey() {
+  const clearedEl = $("net_proxycheck_key_cleared");
+  const keyEl = $("net_proxycheck_key");
+  const hint = $("net_proxycheck_key_hint");
+  if (clearedEl) clearedEl.value = "1";
+  if (keyEl) keyEl.value = "";
+  if (hint) hint.textContent = "保存后将清除已存密钥，改为匿名调用。";
 }
 
 async function saveCredentials(e) {
@@ -4206,6 +4304,13 @@ async function saveNetwork(e) {
   const upstreamUser = ($("net_upstream_user").value || "").trim();
   const upstreamPass = ($("net_upstream_pass").value || "").trim();
 
+  const pcEnabledEl = $("net_proxycheck_enabled");
+  const proxycheck = {
+    enabled: !!(pcEnabledEl && pcEnabledEl.checked),
+    api_key: (($("net_proxycheck_key") && $("net_proxycheck_key").value) || "").trim(),
+    key_cleared: (($("net_proxycheck_key_cleared") && $("net_proxycheck_key_cleared").value) === "1")
+  };
+
   if (upstreamEnabled) {
     if (!upstreamHost) {
       errorDivEl.textContent = "请输入上游代理地址";
@@ -4238,6 +4343,7 @@ async function saveNetwork(e) {
         force_country: forceCountry,
         routing_ip_type: routingIpType,
         min_health_score: minHealthScore,
+        proxycheck: proxycheck,
         upstream_proxy: upstreamEnabled ? {
           enabled: true,
           type: upstreamType,

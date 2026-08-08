@@ -270,6 +270,12 @@ def get_state() -> dict[str, Any]:
     state["favorite_node_ids"] = ui_cfg.get("favorite_node_ids", [])
     state["fav_fail_fallback"] = ui_cfg.get("fav_fail_fallback", True)
     state["upstream_proxy"] = ui_cfg.get("upstream_proxy", { "enabled": False })
+    # 密钥不回传前端，只告诉界面"是否已设置"，避免明文密钥出现在页面源码里
+    _pc = ui_cfg.get("proxycheck") or {}
+    state["proxycheck"] = {
+        "enabled": bool(_pc.get("enabled")),
+        "key_set": bool(str(_pc.get("api_key") or "").strip()),
+    }
     state["country_translations"] = vpn_utils.COUNTRY_TRANSLATIONS
     state["maintenance_running"] = maintenance_lock.locked()
     
@@ -763,7 +769,7 @@ def test_node_by_id(node_id: str) -> dict[str, Any]:
         "trust_score": 0,
     }
     if ok:
-        vpn_utils.enrich_ip_info([temp_node])
+        vpn_utils.enrich_ip_info([temp_node], proxycheck_key=proxycheck_credential())
 
     with lock:
         nodes = read_nodes()
@@ -776,11 +782,8 @@ def test_node_by_id(node_id: str) -> dict[str, Any]:
             if ok:
                 # 注意：必须把 enrich_ip_info 补出的字段整套回写，
                 # 漏掉 trust_score 会导致单独测速后"健康度"一直停在 0。
-                for _key in (
-                    "owner", "asn", "as_name", "location", "ip_type", "quality",
-                    "trust_score", "is_datacenter", "is_residential", "is_vpn",
-                    "is_proxy", "is_tor", "is_crawler", "is_abuser", "abuser_level",
-                ):
+                # 字段清单统一由 vpn_utils.INTEL_FIELDS 维护，避免此处再次漏抄。
+                for _key in vpn_utils.INTEL_FIELDS + ("health_score",):
                     if _key in temp_node:
                         node[_key] = temp_node[_key]
 
@@ -880,7 +883,7 @@ def test_multiple_nodes(node_ids: list[str]) -> list[dict[str, Any]]:
     successful_nodes = [res for res in updated_nodes_map.values() if res.get("probe_status") == "available"]
     if successful_nodes:
         try:
-            vpn_utils.enrich_ip_info(successful_nodes)
+            vpn_utils.enrich_ip_info(successful_nodes, proxycheck_key=proxycheck_credential())
         except Exception as ee:
             print(f"[test_multiple_nodes] 批量富化 IP 失败: {ee}", flush=True)
 
@@ -1138,6 +1141,22 @@ def connect_node_async(node_id: str) -> str:
 IP_TYPE_BACKFILL_LIMIT = 25
 
 
+def proxycheck_credential() -> str | None:
+    """proxycheck.io 调用凭据。
+
+    None  = 未启用，完全不请求这个源；
+    ""    = 已启用但没填密钥，走匿名免费额度；
+    其它  = 已启用且带密钥。
+    """
+    try:
+        cfg = _cached_load_ui_config().get("proxycheck") or {}
+        if not isinstance(cfg, dict) or not cfg.get("enabled"):
+            return None
+        return str(cfg.get("api_key") or "").strip()
+    except Exception:
+        return None
+
+
 def backfill_unknown_ip_types(limit: int = IP_TYPE_BACKFILL_LIMIT) -> int:
     """为 IP 类型仍是"未检测/未知"的节点补查情报。
 
@@ -1165,7 +1184,7 @@ def backfill_unknown_ip_types(limit: int = IP_TYPE_BACKFILL_LIMIT) -> int:
 
         pending.sort(key=_priority)
         batch = pending[:max(1, int(limit))]
-        vpn_utils.enrich_ip_info(batch, max_workers=4)
+        vpn_utils.enrich_ip_info(batch, max_workers=4, proxycheck_key=proxycheck_credential())
 
         resolved = {
             n.get("id"): n for n in batch
@@ -1178,11 +1197,8 @@ def backfill_unknown_ip_types(limit: int = IP_TYPE_BACKFILL_LIMIT) -> int:
             for n in current:
                 info = resolved.get(n.get("id"))
                 if info:
-                    for key in (
-                        "owner", "asn", "as_name", "location", "ip_type", "quality",
-                        "trust_score", "is_datacenter", "is_residential", "is_vpn",
-                        "is_proxy", "is_tor", "is_crawler", "is_abuser", "abuser_level",
-                    ):
+                    # 字段清单统一由 vpn_utils.INTEL_FIELDS 维护，避免漏抄 proxycheck 维度。
+                    for key in vpn_utils.INTEL_FIELDS + ("health_score",):
                         if key in info:
                             n[key] = info[key]
             write_json(NODES_FILE, current)
@@ -1271,19 +1287,13 @@ def maintain_valid_nodes(force: bool = False) -> str:
                 if cand["id"] not in seen_ids:
                     previous = current_by_id.get(str(cand["id"]))
                     if previous:
+                        # 测速类字段手工保留，情报类字段统一由 vpn_utils.INTEL_FIELDS 维护。
                         for key in [
                             "probe_status",
                             "probe_message",
                             "latency_ms",
                             "probed_at",
-                            "owner",
-                            "asn",
-                            "as_name",
-                            "location",
-                            "ip_type",
-                            "quality",
-                            "trust_score",
-                        ]:
+                        ] + list(vpn_utils.INTEL_FIELDS) + ["health_score"]:
                             if previous.get(key) not in (None, ""):
                                 cand[key] = previous.get(key)
                     merged.append(cand)
@@ -2746,6 +2756,23 @@ class Handler(BaseHTTPRequestHandler):
                 ui_cfg = _cached_load_ui_config()
                 # 上游代理是全局配置（节点池只由父进程拉取一次，所有出口共用）
                 ui_cfg["upstream_proxy"] = upstream_proxy
+
+                # proxycheck.io 风控情报，同样是全局配置
+                pc_payload = payload.get("proxycheck")
+                if isinstance(pc_payload, dict):
+                    old_pc = ui_cfg.get("proxycheck") or {}
+                    new_key = str(pc_payload.get("api_key") or "").strip()
+                    if pc_payload.get("key_cleared"):
+                        # 用户显式点了"清除密钥"
+                        new_key = ""
+                    elif not new_key:
+                        # 输入框留空 = 不改动，沿用已保存的密钥
+                        # （前端不回显密钥，留空提交不能把已有密钥抹掉）
+                        new_key = str(old_pc.get("api_key") or "").strip()
+                    ui_cfg["proxycheck"] = {
+                        "enabled": bool(pc_payload.get("enabled")),
+                        "api_key": new_key,
+                    }
                 if slot_id in ("", "__default__"):
                     ui_cfg["routing_mode"] = routing_mode
                     ui_cfg["force_country"] = force_country
