@@ -453,11 +453,27 @@ class SlotOrchestrator:
         self._watchdog_started = True
         threading.Thread(target=self._watchdog_loop, daemon=True).start()
 
+    def _is_ui_healthy(self, rp: RegionProcess) -> bool:
+        """探测子出口管理 UI 端口是否可连通（只测 /api/egress_status）。"""
+        try:
+            import urllib.request
+            with urllib.request.urlopen(
+                urllib.request.Request(f"http://127.0.0.1:{rp.ui_port}/api/egress_status", method="GET"),
+                timeout=2,
+            ) as r:
+                r.read()
+                return True
+        except Exception:
+            return False
+
     def _watchdog_loop(self) -> None:
         """看门狗主循环：每 15 秒用最近一次配置做一次 sync。
 
         sync() 本身具备"存活进程原地保活、已死进程自动重启、资源稳定不漂移"的特性，
         因此即便某个出口的子进程意外退出，也会在 15 秒内被自动拉起，杜绝长期"未启动"。
+
+        额外检查：proxy 通但 UI 管理端口不通的子出口，往往是主线程卡住/崩溃而代理线程
+        仍在跑，看门狗会把这类进程也重启掉，避免"卡片显示运行中却切不了节点"。
         """
         while True:
             time.sleep(15)
@@ -465,7 +481,28 @@ class SlotOrchestrator:
                 if self._last_ui_cfg is not None:
                     self.sync(self._last_ui_cfg)
             except Exception as exc:
-                print(f"[watchdog] 自检异常: {exc}", flush=True)
+                print(f"[watchdog] sync 自检异常: {exc}", flush=True)
+            try:
+                for rp in list(self.regions.values()):
+                    if not rp.is_alive():
+                        continue
+                    if not self._is_ui_healthy(rp):
+                        print(
+                            f"[watchdog] {rp.slot_id} 管理 UI 端口 {rp.ui_port} 无响应，"
+                            f"proxy 端口 {rp.proxy_port} 可能仍存活，执行重启...",
+                            flush=True,
+                        )
+                        try:
+                            rp.stop()
+                        except Exception as stop_exc:
+                            print(f"[watchdog] {rp.slot_id} 停止旧进程失败: {stop_exc}", flush=True)
+                        # sync 会在下一轮处理重启；这里直接调用可加速恢复
+                        try:
+                            self.sync(self._last_ui_cfg or {})
+                        except Exception as sync_exc:
+                            print(f"[watchdog] {rp.slot_id} 重启 sync 失败: {sync_exc}", flush=True)
+            except Exception as exc:
+                print(f"[watchdog] UI 健康检查异常: {exc}", flush=True)
 
     def stop_all(self) -> None:
         for rp in self.regions.values():

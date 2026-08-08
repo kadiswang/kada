@@ -2682,7 +2682,7 @@ class Handler(BaseHTTPRequestHandler):
             except Exception as exc:
                 self.send_json({"ok": False, "error": str(exc)}, HTTPStatus.INTERNAL_SERVER_ERROR)
         elif effective_path == "/api/egress_restart":
-            # 重启指定出口的子进程（崩溃/离线后一键自救）。配置是单一事实来源，
+            # 重启指定出口的子进程（崩溃/离线/UI 无响应后一键自救）。配置是单一事实来源，
             # sync() 会保留存活进程、自动拉起已死的子进程，资源编号保持稳定。
             try:
                 payload = self.read_json_body() or {}
@@ -2693,13 +2693,19 @@ class Handler(BaseHTTPRequestHandler):
                         self.send_json({"ok": False, "error": "未找到该出口"}); return
                 try:
                     _ensure_egress_orch(ui_cfg)
+                    if EGRESS_ORCH is not None and slot_id and slot_id not in ("", "__default__"):
+                        rp = EGRESS_ORCH.regions.get(slot_id)
+                        if rp is not None:
+                            print(f"[API] 用户请求重启出口 {slot_id}，先停止旧进程...", flush=True)
+                            rp.stop()
+                            EGRESS_ORCH.regions.pop(slot_id, None)
                     if EGRESS_ORCH is not None:
                         EGRESS_ORCH.sync(ui_cfg)
                 except Exception as exc:
                     log_to_json("ERROR", "Egress", f"重启出口失败: {exc}")
                     self.send_json({"ok": False, "error": f"重启失败: {exc}"}); return
                 # 稍等子进程拉起，再返回最新状态
-                time.sleep(1.0)
+                time.sleep(1.5)
                 self.send_json({"ok": True, "egress": aggregate_egress_status(),
                                 "message": "已尝试重启出口，稍候将在状态中反映。"})
             except Exception as exc:
@@ -3047,13 +3053,18 @@ def aggregate_egress_status() -> list[dict[str, Any]]:
         else:
             entry["log_path"] = os.path.join(str(DATA_DIR), f"slot_{slot_id}", "region.log")
             entry["crashed"] = False
-        if rp is not None:
+        # 单独探测子出口管理 UI 端口：proxy 通但 UI 不通 = "状态异常"，
+        # 常见于子进程启动到一半卡住、或管理线程崩溃而代理线程仍在跑。
+        entry["ui_reachable"] = False
+        if rp is not None and rp.is_alive():
             try:
                 with urllib.request.urlopen(
                     urllib.request.Request(f"http://127.0.0.1:{rp.ui_port}/api/egress_status", method="GET"),
                     timeout=2,
                 ) as r:
-                    entry.update(json.loads(r.read().decode("utf-8")))
+                    child_state = json.loads(r.read().decode("utf-8"))
+                    entry.update(child_state)
+                    entry["ui_reachable"] = True
             except Exception:
                 pass
         result.append(entry)

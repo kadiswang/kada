@@ -3309,9 +3309,16 @@ function _buildEgressCardHTML(e, mode) {
     configSummary += " | 健康度≥" + e.min_health_score;
   }
 
+  // proxy 端口通但管理 UI 端口不通 = 状态异常（子进程主线程卡住/崩溃，
+  // 代理线程仍在跑），必须让用户一眼看出来，而不是显示"运行中"。
+  const isUiAbnormal = !isDown && !e.is_default && e.ui_reachable === false;
+  const isCrashed = e.crashed === true;
+
   // 状态徽标（与主页一致的小药丸样式）
   let statusBadge;
-  if (isDown) {
+  if (isCrashed || isUiAbnormal) {
+    statusBadge = "<span style='font-size:11px;color:#dc2626;background:rgba(220,38,38,0.10);padding:1px 8px;border-radius:10px;border:1px solid rgba(220,38,38,0.2);'>状态异常</span>";
+  } else if (isDown) {
     statusBadge = "<span style='font-size:11px;color:#94a3b8;background:rgba(148,163,184,0.12);padding:1px 8px;border-radius:10px;border:1px solid rgba(148,163,184,0.2);'>未启动</span>";
   } else if (e.active_node_id) {
     statusBadge = "<span style='font-size:11px;color:#059669;background:rgba(5,150,105,0.10);padding:1px 8px;border-radius:10px;border:1px solid rgba(5,150,105,0.2);'>已连接</span>";
@@ -3325,6 +3332,10 @@ function _buildEgressCardHTML(e, mode) {
   let nodeBrief = "";
   if (e.active_node_id) {
     nodeBrief = "<span style='color:var(--text-muted);font-size:12px;font-family:ui-monospace,\"SF Mono\",Menlo,monospace;'>" + escAttr(e.active_node_id) + "</span>";
+  } else if (isCrashed) {
+    nodeBrief = "<span style='color:#dc2626;font-size:12px;'>子出口进程已退出，请查看日志或重启</span>";
+  } else if (isUiAbnormal) {
+    nodeBrief = "<span style='color:#dc2626;font-size:12px;'>子出口管理端口无响应，代理端口可能仍存活，请点击重启恢复</span>";
   } else if (e.last_check_message) {
     nodeBrief = "<span style='color:var(--text-muted);font-size:12px;'>" + escAttr(e.last_check_message) + "</span>";
   } else if (isDown) {
@@ -3337,6 +3348,11 @@ function _buildEgressCardHTML(e, mode) {
   // 未启动的出口也要能删除，否则子进程起不来时用户删不掉。
   let actionsHtml = "";
   if (mode !== "home") {
+    const restartBtn = (isUiAbnormal || isCrashed)
+      ? "<button class='btn-primary' style='height:28px;padding:0 10px;border-radius:6px;font-size:12px;display:inline-flex;align-items:center;gap:4px;flex-shrink:0;margin-right:6px;' onclick=\"event.stopPropagation();restartEgress('" + escAttr(e.slot_id) + "')\">" +
+          "<svg viewBox='0 0 24 24' fill='none' stroke='currentColor' stroke-width='2' style='width:12px;height:12px;'><path d='M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15'/></svg>重启" +
+        "</button>"
+      : "";
     const disconnectBtn = !isDown
       ? "<button class='btn-danger' style='height:28px;padding:0 10px;border-radius:6px;font-size:12px;display:inline-flex;align-items:center;gap:4px;flex-shrink:0;' onclick=\"event.stopPropagation();disconnectEgress('" + escAttr(e.slot_id) + "')\">" +
           "<svg viewBox='0 0 24 24' fill='none' stroke='currentColor' stroke-width='2' style='width:12px;height:12px;'><path d='M10 14l2-2m0 0l2-2m-2 2l-2-2m2 2l2 2m7-2a9 9 0 11-18 0 9 9 0 0118 0z'/></svg>断开" +
@@ -3347,7 +3363,7 @@ function _buildEgressCardHTML(e, mode) {
           "<svg viewBox='0 0 24 24' fill='none' stroke='currentColor' stroke-width='2' style='width:12px;height:12px;'><path d='M3 6h18M8 6V4a2 2 0 012-2h4a2 2 0 012 2v2m3 0v14a2 2 0 01-2 2H7a2 2 0 01-2-2V6h14z'/></svg>删除" +
         "</button>"
       : "";
-    actionsHtml = disconnectBtn + deleteBtn;
+    actionsHtml = restartBtn + disconnectBtn + deleteBtn;
   }
 
   const selectedBg = isSelected ? "background: rgba(99,102,241,0.06); border-color: rgba(99,102,241,0.25);" : "";
@@ -3435,9 +3451,13 @@ function _buildHomeEgressSummaryHTML(e) {
   if ((e.min_health_score || 0) > 0) {
     configSummary += " | 健康度≥" + e.min_health_score;
   }
+  const isUiAbnormalHome = !isDown && !isDefault && e.ui_reachable === false;
+  const isCrashedHome = e.crashed === true;
   // 状态徽标
   let statusBadge;
-  if (isDown) {
+  if (isCrashedHome || isUiAbnormalHome) {
+    statusBadge = "<span style='font-size:11px;color:#dc2626;background:rgba(220,38,38,0.10);padding:1px 8px;border-radius:10px;border:1px solid rgba(220,38,38,0.2);'>状态异常</span>";
+  } else if (isDown) {
     statusBadge = "<span style='font-size:11px;color:#94a3b8;background:rgba(148,163,184,0.12);padding:1px 8px;border-radius:10px;border:1px solid rgba(148,163,184,0.2);'>未启动</span>";
   } else if (e.active_node_id) {
     statusBadge = "<span style='font-size:11px;color:#059669;background:rgba(5,150,105,0.10);padding:1px 8px;border-radius:10px;border:1px solid rgba(5,150,105,0.2);'>已连接</span>";
@@ -3655,9 +3675,14 @@ async function renderEgressNodeList() {
     var isActive = n.id && egressActiveNodeIdForSlot(slotKey) === n.id;
     var badgeClass = isActive ? "available" : (n.probe_status || "not_checked");
     var badgeText = isActive ? '<span class="badge-pulse"></span>已连接' : translateStatus(n.probe_status);
+    // 子出口状态异常（UI 管理端口无响应/已崩溃）时禁用切换，避免误弹 Connection refused
+    const selectedEgress = !slotIsDefault && egressStatusList
+      ? egressStatusList.find(function(e) { return (e.slot_id || "") === slotKey; })
+      : null;
+    const isEgressAbnormal = selectedEgress && (selectedEgress.crashed === true || selectedEgress.ui_reachable === false);
     var connectBtn = isActive
       ? '<button class="connect-btn" disabled style="background:var(--success-gradient);color:white;cursor:default;opacity:1;">已连接</button>'
-      : '<button class="connect-btn" ' + (isUnavailable ? 'disabled style="opacity:0.3;cursor:not-allowed;"' : '') + ' onclick="connectNode(\'' + esc(n.id) + '\',\'' + escAttr(slotKey) + '\')">切换</button>';
+      : '<button class="connect-btn" ' + ((isUnavailable || isEgressAbnormal) ? 'disabled style="opacity:0.3;cursor:not-allowed;"' : '') + ' onclick="connectNode(\'' + esc(n.id) + '\',\'' + escAttr(slotKey) + '\')">' + (isEgressAbnormal ? '重启出口后切换' : '切换') + '</button>';
     return '<tr' + (isActive ? ' class="active-row"' : '') + ' style="display:table-row!important;">' +
       '<td style="display:table-cell!important;white-space:nowrap;"><span class="badge ' + badgeClass + '">' + badgeText + '</span></td>' +
       '<td class="mono" style="white-space:nowrap;max-width:220px;overflow:hidden;text-overflow:ellipsis;display:table-cell!important;" title="' + esc(n.ip||n.remote_host) + ':' + (n.remote_port||"") + '">' + esc(n.ip||n.remote_host) + ':' + (n.remote_port||"") + '</td>' +
