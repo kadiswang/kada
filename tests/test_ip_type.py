@@ -164,5 +164,45 @@ class TestCacheSchemaInvalidation(unittest.TestCase):
         self.assertTrue(all(n["ip_type"] == "residential" for n in nodes))
 
 
+class TestProxycheckTypeFallback(unittest.TestCase):
+    """net.coffee / ip-api 都判不出类型时，proxycheck 应作为兜底补判。"""
+
+    def test_helper_maps_proxycheck_type(self):
+        cases = [
+            ({"flagged_type": "Residential"}, "residential"),
+            ({"flagged_type": "Mobile"}, "mobile"),
+            ({"flagged_type": "VPN"}, "hosting"),
+            ({"flagged_type": "Proxy", "is_flagged_proxy": True}, "hosting"),
+            ({"flagged_type": "Hosting"}, "hosting"),
+            ({"flagged_type": "Business"}, None),   # 无法确定，不强行覆盖
+            ({"flagged_type": "", "is_flagged_proxy": False}, None),
+        ]
+        for extra, expect in cases:
+            self.assertEqual(vpn_utils._ip_type_from_proxycheck(extra), expect,
+                             f"flagged_type={extra.get('flagged_type')!r}")
+
+    def test_fallback_overrides_unknown_only(self):
+        """只有 ip_type=unknown 的节点才用 proxycheck 兜底；已判定的保持不动。"""
+        nodes = [
+            {"id": "a", "ip": "1.1.1.1", "ip_type": "unknown"},
+            {"id": "b", "ip": "2.2.2.2", "ip_type": "residential"},
+        ]
+        pc_map = {
+            "1.1.1.1": {"risk_score": 10, "flagged_type": "Residential", "is_flagged_proxy": False},
+            "2.2.2.2": {"risk_score": 10, "flagged_type": "Hosting", "is_flagged_proxy": True},
+        }
+        fresh = {"ip_type": "unknown", "cached_at": vpn_utils.time.time(),
+                 "schema": vpn_utils.IP_CACHE_SCHEMA}
+        with mock.patch.object(vpn_utils, "load_ip_cache", return_value={}), \
+             mock.patch.object(vpn_utils, "save_ip_cache"), \
+             mock.patch.object(vpn_utils, "query_ip_netcoffee", return_value=fresh), \
+             mock.patch.object(vpn_utils, "query_proxycheck_batch", return_value=pc_map):
+            vpn_utils.enrich_ip_info(nodes, proxycheck_key="test-key")
+        # a: 兜底判成住宅；b: 原本住宅，不被 proxycheck 的 Hosting 覆盖
+        by_id = {n["id"]: n for n in nodes}
+        self.assertEqual(by_id["a"]["ip_type"], "residential")
+        self.assertEqual(by_id["b"]["ip_type"], "residential")
+
+
 if __name__ == "__main__":
     unittest.main()

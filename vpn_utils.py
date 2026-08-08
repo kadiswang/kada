@@ -19,7 +19,7 @@ IP_CACHE_FILE = DATA_DIR / "ip_cache.json"
 
 # IP 情报缓存结构版本。判定规则变更时递增此值，
 # 旧版本缓存会被视为过期并自动重查，避免历史错误结论（如住宅 IP 被误判为未知）长期滞留。
-IP_CACHE_SCHEMA = 3
+IP_CACHE_SCHEMA = 4
 
 ip_cache_lock = threading.RLock()
 
@@ -483,6 +483,20 @@ def enrich_ip_info(
             for ip, extra in risk_map.items():
                 if ip in new_entries:
                     new_entries[ip].update(extra)
+                    # 兜底：net.coffee 与 ip-api 都判不出 IP 类型（ip_type 仍为
+                    # unknown）时，用 proxycheck 的 type 字段补判住宅/手机/机房。
+                    # 这是"检测不出来的用它兜底"的设计——proxycheck 是专业判定源，
+                    # 但因每日额度有限只作最后兜底，不抢主用位。
+                    if new_entries[ip].get("ip_type") in (None, "unknown"):
+                        derived = _ip_type_from_proxycheck(extra)
+                        if derived:
+                            new_entries[ip]["ip_type"] = derived
+                            if derived == "residential":
+                                new_entries[ip]["quality"] = new_entries[ip].get("quality") or "residential"
+                            elif derived == "mobile":
+                                new_entries[ip]["quality"] = new_entries[ip].get("quality") or "mobile"
+                            elif derived == "hosting":
+                                new_entries[ip]["quality"] = new_entries[ip].get("quality") or "proxy"
         except Exception as e:
             print(f"[proxycheck] 叠加失败，忽略: {e}", flush=True)
 
@@ -725,6 +739,27 @@ def query_proxycheck_batch(ips: list[str], api_key: str = "") -> dict[str, dict[
             print(f"[proxycheck] 批量查询失败: {e}", flush=True)
             break
     return result
+
+
+def _ip_type_from_proxycheck(extra: dict[str, Any]) -> str | None:
+    """从 proxycheck.io 的返回里反推 IP 类型，作为 net.coffee / ip-api 都判不出时的兜底。
+
+    仅在前两源给出 unknown 时才调用，故只在「高置信」时返回具体类型，
+    否则返回 None（不强行覆盖，避免误标）。
+
+    proxycheck 的 ``type`` 字段取值举例：Residential / Mobile / VPN / Proxy /
+    Tor / Hosting / Business / University / 国家名（无法判定时）。
+    """
+    ptype = str(extra.get("flagged_type") or "").lower()
+    is_proxy = bool(extra.get("is_flagged_proxy"))
+    if "residential" in ptype:
+        return "residential"
+    if "mobile" in ptype:
+        return "mobile"
+    if is_proxy or any(k in ptype for k in ("vpn", "proxy", "tor", "hosting")):
+        return "hosting"
+    # Business / University / 国家名等无法确定是否住宅，保守返回 None
+    return None
 
 
 def diagnose_api_failure(api_url: str = "https://www.vpngate.net/api/iphone/") -> tuple[int, str]:
