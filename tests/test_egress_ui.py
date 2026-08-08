@@ -980,5 +980,50 @@ class TestEgressModuleCardAndFeedback(unittest.TestCase):
         self.assertIn(">= 2", fn, "必须连续 2 次未连接才算真正结束")
 
 
+class TestSlotOrchestratorStableAllocation(unittest.TestCase):
+    """关键回归：sync() 不得反复重分配已稳定出口的 tun/table/fwmark/proxy_port，
+    否则端口/tun 不断漂移，触发子进程频繁重启。"""
+
+    def test_sync_does_not_reallocate_stable_slots(self):
+        """已完整分配的资源在多次 sync 后应保持不变。"""
+        orch = slot_manager.SlotOrchestrator(Path(tempfile.mkdtemp()), 8787, 7928)
+        ui_cfg = {
+            "slots": [
+                {"slot_id": "kr", "region": "KR", "enabled": True},
+                {"slot_id": "recent", "region": "", "enabled": True},
+            ]
+        }
+        orch.sync(ui_cfg)
+        first = [dict(s) for s in ui_cfg["slots"]]
+
+        # 再次 sync，模拟看门狗周期性自检
+        orch.sync(ui_cfg)
+        second = [dict(s) for s in ui_cfg["slots"]]
+
+        for a, b in zip(first, second):
+            self.assertEqual(a.get("tun_dev"), b.get("tun_dev"), f"{a['slot_id']} tun_dev 不应漂移")
+            self.assertEqual(a.get("route_table"), b.get("route_table"), f"{a['slot_id']} route_table 不应漂移")
+            self.assertEqual(a.get("fwmark"), b.get("fwmark"), f"{a['slot_id']} fwmark 不应漂移")
+            self.assertEqual(a.get("proxy_port"), b.get("proxy_port"), f"{a['slot_id']} proxy_port 不应漂移")
+
+    def test_sync_detects_duplicate_tun_and_reassigns(self):
+        """旧版本坏配置留下重复 tun 时，sync 应只重分配冲突的 slot。"""
+        orch = slot_manager.SlotOrchestrator(Path(tempfile.mkdtemp()), 8787, 7928)
+        ui_cfg = {
+            "slots": [
+                {"slot_id": "a", "tun_dev": "tun1", "route_table": 101, "fwmark": 1, "proxy_port": 7929, "enabled": True},
+                {"slot_id": "b", "tun_dev": "tun1", "route_table": 101, "fwmark": 1, "proxy_port": 7930, "enabled": True},
+            ]
+        }
+        orch.sync(ui_cfg)
+        slots = {s["slot_id"]: s for s in ui_cfg["slots"]}
+        # 至少有一个被重分配（不能两个都保留 tun1）
+        devs = {s["tun_dev"] for s in ui_cfg["slots"]}
+        self.assertEqual(len(devs), 2, "重复 tun 必须被拆分")
+        # 未冲突字段尽量保留（proxy_port 若显式指定则保留）
+        self.assertIn(slots["a"]["proxy_port"], (7929, 7930))
+        self.assertIn(slots["b"]["proxy_port"], (7929, 7930))
+
+
 if __name__ == "__main__":
     unittest.main()

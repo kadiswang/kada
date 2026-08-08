@@ -16,6 +16,7 @@ from __future__ import annotations
 import os
 import re
 import signal
+import socket
 import subprocess
 import sys
 import threading
@@ -43,6 +44,28 @@ def _assign_index(cfg: Any, n: int) -> None:
     cfg.fwmark = n
 
 
+def _can_bind(host: str, port: int) -> bool:
+    """探测目标端口是否仍可被绑定（True = 端口空闲）。"""
+    try:
+        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+            # SO_REUSEADDR 允许我们探测处于 TIME_WAIT 的端口；真正的 bind 冲突由进程存活导致
+            s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+            s.bind((host, port))
+            return True
+    except OSError:
+        return False
+
+
+def _wait_port_free(host: str, port: int, timeout: float = 8.0, label: str = "") -> bool:
+    """等待目标端口变为可绑定状态，避免旧进程未完全退出时新进程启动报 Address already in use。"""
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        if _can_bind(host, port):
+            return True
+        time.sleep(0.2)
+    return False
+
+
 class RegionProcess:
     """管理单个地区子进程的生命周期。"""
 
@@ -54,6 +77,9 @@ class RegionProcess:
         self.proxy_port = cfg.proxy_port if cfg.proxy_port else proxy_port
         self.proc: subprocess.Popen[str] | None = None
         self._last_start_ts: float = 0.0
+        # 看门狗重启冷却：记录最近一次被看门狗触发重启的时间与连续失败次数
+        self._last_watchdog_restart_ts: float = 0.0
+        self._watchdog_restart_count: int = 0
 
     @property
     def slot_id(self) -> str:
@@ -172,6 +198,20 @@ class RegionProcess:
             return
         self.data_dir.mkdir(parents=True, exist_ok=True)
         self._seed_auth()
+        # 启动前确保旧进程占用的端口已释放，避免 "Address already in use" 导致子进程启动即崩溃
+        host = "127.0.0.1"
+        if not _wait_port_free(host, self.ui_port, timeout=5.0):
+            print(
+                f"[SlotOrchestrator] 警告：{self.slot_id} 的 UI 端口 {self.ui_port} 仍被占用，"
+                f"新子进程可能无法绑定该端口",
+                flush=True,
+            )
+        if not _wait_port_free(host, self.proxy_port, timeout=5.0):
+            print(
+                f"[SlotOrchestrator] 警告：{self.slot_id} 的 proxy 端口 {self.proxy_port} 仍被占用，"
+                f"新子进程可能无法绑定该端口",
+                flush=True,
+            )
         print(
             f"[SlotOrchestrator] 启动子出口 {self.slot_id}: "
             f"ui_port={self.ui_port}, proxy_port={self.proxy_port}, "
@@ -191,6 +231,7 @@ class RegionProcess:
             stdout=log_fd,
             stderr=subprocess.STDOUT,
             start_new_session=True,
+            close_fds=True,
         )
         # 记录最后一次启动时间，便于与日志对应
         self._last_start_ts = time.time()
@@ -243,6 +284,20 @@ class RegionProcess:
         self.proc = None
         # 清理可能脱离进程组、残留的 OpenVPN 进程（按数据目录匹配）
         self._kill_residual_openvpn()
+        # 等待该出口占用的端口真正释放，避免快速重建时 Address already in use
+        host = "127.0.0.1"
+        if not _wait_port_free(host, self.ui_port, timeout=8.0):
+            print(
+                f"[SlotOrchestrator] 警告：{self.slot_id} 停止后 UI 端口 {self.ui_port} "
+                f"仍未释放，可能存在残留进程",
+                flush=True,
+            )
+        if not _wait_port_free(host, self.proxy_port, timeout=8.0):
+            print(
+                f"[SlotOrchestrator] 警告：{self.slot_id} 停止后 proxy 端口 {self.proxy_port} "
+                f"仍未释放，可能存在残留进程",
+                flush=True,
+            )
 
     def _kill_residual_openvpn(self) -> None:
         """按本 Slot 数据目录清理残留的 openvpn 进程，避免 tun/端口被占用。"""
@@ -359,20 +414,24 @@ class SlotOrchestrator:
         # 不再按列表顺序（idx）重排，避免增删出口时编号漂移、多个出口抢占同一
         # tun 设备/路由表（之前表现为"只有第一个新建出口能用，后续未启动/冲突"）。
         # 编号 n 与资源绑定固定：tun{n} / table{100+n} / fwmark{n}。
-        used_idx = set()
+        # 先统计已分配编号的出现次数，检测旧版本可能留下的重复 tun 冲突
+        from collections import Counter
+
+        assigned_counts: Counter = Counter()
         for c in desired:
             n = _slot_index(c.tun_dev)
             if n is not None and c.route_table == 100 + n and c.fwmark == n:
-                used_idx.add(n)
+                assigned_counts[n] += 1
+
+        used_idx: set[int] = set()
         next_idx = 1
         for c in desired:
             n = _slot_index(c.tun_dev)
             fully = n is not None and c.route_table == 100 + n and c.fwmark == n and c.proxy_port
-            if fully and n not in used_idx:
-                # 完整分配且无冲突：保持稳定，不重新编号（避免增删其它出口时漂移）
+            # 只有"完整分配且无冲突"才保持现有编号，否则重新分配（避免编号漂移/抢占）
+            if fully and assigned_counts.get(n, 0) == 1:
                 used_idx.add(n)
                 continue
-            # 未分配、或编号与已有出口冲突（旧版本可能留下重复 tun）：重新分配下一个空闲编号
             while next_idx in used_idx:
                 next_idx += 1
             _assign_index(c, next_idx)
@@ -507,6 +566,10 @@ class SlotOrchestrator:
 
         额外检查：proxy 通但 UI 管理端口不通的子出口，往往是主线程卡住/崩溃而代理线程
         仍在跑，看门狗会把这类进程也重启掉，避免"卡片显示运行中却切不了节点"。
+
+        为避免端口未释放导致的快速重启死循环，加入启动宽限期与连续重启冷却：
+        - 子进程启动后 5 秒内不触发健康检查；
+        - 30 秒内连续重启超过 3 次则判定为"反复崩溃"，停止自动重启，等待人工干预。
         """
         while True:
             time.sleep(15)
@@ -516,28 +579,47 @@ class SlotOrchestrator:
             except Exception as exc:
                 print(f"[watchdog] sync 自检异常: {exc}", flush=True)
             try:
+                now = time.time()
                 for rp in list(self.regions.values()):
                     if not rp.is_alive():
                         continue
+                    # 刚启动的子进程给 5 秒初始化时间，避免启动流程未完成就触发重启
+                    if now - rp._last_start_ts < 5.0:
+                        continue
                     healthy, reason = self._is_ui_healthy(rp)
-                    if not healthy:
-                        tail = rp.tail_log(10)
+                    if healthy:
+                        # 健康后重置连续失败计数
+                        if rp._watchdog_restart_count > 0:
+                            rp._watchdog_restart_count = 0
+                            rp._last_watchdog_restart_ts = 0.0
+                        continue
+                    # 连续重启冷却：30 秒内重启超过 3 次，认为存在持续性故障，停止自动重启
+                    if now - rp._last_watchdog_restart_ts < 30.0 and rp._watchdog_restart_count >= 3:
                         print(
-                            f"[watchdog] {rp.slot_id} 管理 UI 端口 {rp.ui_port} 无响应"
-                            f"（原因：{reason}），proxy 端口 {rp.proxy_port} 可能仍存活，执行重启...",
+                            f"[watchdog] {rp.slot_id} 最近 30 秒内已重启 {rp._watchdog_restart_count} 次，"
+                            f"停止自动重启以避免死循环，请检查配置或 region.log",
                             flush=True,
                         )
-                        if tail:
-                            print(f"[watchdog] {rp.slot_id} region.log 尾部:\n{tail}", flush=True)
-                        try:
-                            rp.stop()
-                        except Exception as stop_exc:
-                            print(f"[watchdog] {rp.slot_id} 停止旧进程失败: {stop_exc}", flush=True)
-                        # sync 会在下一轮处理重启；这里直接调用可加速恢复
-                        try:
-                            self.sync(self._last_ui_cfg or {})
-                        except Exception as sync_exc:
-                            print(f"[watchdog] {rp.slot_id} 重启 sync 失败: {sync_exc}", flush=True)
+                        continue
+                    tail = rp.tail_log(10)
+                    print(
+                        f"[watchdog] {rp.slot_id} 管理 UI 端口 {rp.ui_port} 无响应"
+                        f"（原因：{reason}），proxy 端口 {rp.proxy_port} 可能仍存活，执行重启...",
+                        flush=True,
+                    )
+                    if tail:
+                        print(f"[watchdog] {rp.slot_id} region.log 尾部:\n{tail}", flush=True)
+                    try:
+                        rp.stop()
+                    except Exception as stop_exc:
+                        print(f"[watchdog] {rp.slot_id} 停止旧进程失败: {stop_exc}", flush=True)
+                    rp._last_watchdog_restart_ts = now
+                    rp._watchdog_restart_count += 1
+                    # sync 会在下一轮处理重启；这里直接调用可加速恢复
+                    try:
+                        self.sync(self._last_ui_cfg or {})
+                    except Exception as sync_exc:
+                        print(f"[watchdog] {rp.slot_id} 重启 sync 失败: {sync_exc}", flush=True)
             except Exception as exc:
                 print(f"[watchdog] UI 健康检查异常: {exc}", flush=True)
 

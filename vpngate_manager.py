@@ -69,6 +69,12 @@ class DualStackHTTPServer(ThreadingHTTPServer):
                 raise e
 
     def server_bind(self):
+        # 允许快速重用处于 TIME_WAIT 状态的本地地址，避免子出口被看门狗快速重启时
+        # 因旧连接未完全释放而报 "Address already in use"。
+        try:
+            self.socket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        except OSError:
+            pass
         if self.address_family == socket.AF_INET6:
             try:
                 self.socket.setsockopt(socket.IPPROTO_IPV6, socket.IPV6_V6ONLY, 0)
