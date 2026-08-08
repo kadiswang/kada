@@ -1976,6 +1976,15 @@ class Handler(BaseHTTPRequestHandler):
                 self.send_json({"ok": True, "egress": aggregate_egress_status()})
             except Exception as exc:
                 self.send_json({"ok": False, "error": str(exc)}, HTTPStatus.INTERNAL_SERVER_ERROR)
+        elif effective_path == "/api/egress_routing_config":
+            # 返回某个出口的路由配置（用于主页/出站管理页按选中出口过滤节点列表）
+            try:
+                qs = urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query)
+                slot_id = (qs.get("slot_id") or ["__default__"])[0]
+                cfg = _get_egress_routing_config(slot_id)
+                self.send_json({"ok": True, "slot_id": slot_id, "config": cfg})
+            except Exception as exc:
+                self.send_json({"ok": False, "error": str(exc)}, HTTPStatus.INTERNAL_SERVER_ERROR)
         elif effective_path.startswith("/configs/"):
             filename = urllib.parse.unquote(effective_path.removeprefix("/configs/"))
             with lock:
@@ -2708,15 +2717,6 @@ class Handler(BaseHTTPRequestHandler):
                 time.sleep(1.5)
                 self.send_json({"ok": True, "egress": aggregate_egress_status(),
                                 "message": "已尝试重启出口，稍候将在状态中反映。"})
-            except Exception as exc:
-                self.send_json({"ok": False, "error": str(exc)}, HTTPStatus.INTERNAL_SERVER_ERROR)
-        elif effective_path == "/api/egress_routing_config":
-            # 返回某个出口的路由配置（用于主页/出站管理页按选中出口过滤节点列表）
-            try:
-                qs = urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query)
-                slot_id = (qs.get("slot_id") or ["__default__"])[0]
-                cfg = _get_egress_routing_config(slot_id)
-                self.send_json({"ok": True, "slot_id": slot_id, "config": cfg})
             except Exception as exc:
                 self.send_json({"ok": False, "error": str(exc)}, HTTPStatus.INTERNAL_SERVER_ERROR)
         elif effective_path == "/api/egress_update_routing":

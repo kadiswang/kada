@@ -138,11 +138,34 @@ class RegionProcess:
             data["route_table"] = cfg.route_table
         if cfg.fwmark >= 0:
             data["fwmark"] = cfg.fwmark
+        # 把父进程为子出口分配的 UI/Proxy 端口写进配置：即使环境变量在某些路径
+        # 中未被读取，子进程也能从 ui_auth.json 拿到正确端口，避免误绑到默认
+        # 8790/7928 导致端口冲突或管理 UI 无响应。
+        data["port"] = self.ui_port
+        data["host"] = "127.0.0.1"
+        data["proxy_port"] = self.proxy_port
         data.setdefault("connection_enabled", True)
         try:
             write_json(auth, data)
         except Exception:
             pass
+
+    def tail_log(self, lines: int = 20) -> str:
+        """读取该出口 region.log 的最后几行，用于父进程诊断子进程启动失败原因。"""
+        log_path = self.data_dir / "region.log"
+        if not log_path.exists():
+            return ""
+        try:
+            with open(log_path, "rb") as f:
+                f.seek(0, 2)
+                size = f.tell()
+                chunk_size = min(size, 4096)
+                f.seek(max(0, size - chunk_size))
+                raw = f.read()
+            text = raw.decode("utf-8", errors="replace")
+            return "\n".join(text.splitlines()[-lines:])
+        except Exception:
+            return ""
 
     def start(self) -> None:
         if self.is_alive():
@@ -442,6 +465,13 @@ class SlotOrchestrator:
                 failed.append(cfg.slot_id)
         if failed:
             print(f"[sync] 以下子出口启动失败：{', '.join(failed)}，请查看对应 slot_xxx/region.log", flush=True)
+            for slot_id in failed:
+                rp = self.regions.get(slot_id)
+                if rp is None:
+                    continue
+                tail = rp.tail_log(15)
+                if tail:
+                    print(f"[sync] {slot_id} region.log 尾部:\n{tail}", flush=True)
 
     def status(self) -> list[dict[str, Any]]:
         return [rp.status() for rp in self.regions.values()]
@@ -453,8 +483,11 @@ class SlotOrchestrator:
         self._watchdog_started = True
         threading.Thread(target=self._watchdog_loop, daemon=True).start()
 
-    def _is_ui_healthy(self, rp: RegionProcess) -> bool:
-        """探测子出口管理 UI 端口是否可连通（只测 /api/egress_status）。"""
+    def _is_ui_healthy(self, rp: RegionProcess) -> tuple[bool, str]:
+        """探测子出口管理 UI 端口是否可连通（只测 /api/egress_status）。
+
+        返回 (是否健康, 失败原因/空字符串)。
+        """
         try:
             import urllib.request
             with urllib.request.urlopen(
@@ -462,9 +495,9 @@ class SlotOrchestrator:
                 timeout=2,
             ) as r:
                 r.read()
-                return True
-        except Exception:
-            return False
+                return True, ""
+        except Exception as exc:
+            return False, str(exc)
 
     def _watchdog_loop(self) -> None:
         """看门狗主循环：每 15 秒用最近一次配置做一次 sync。
@@ -486,12 +519,16 @@ class SlotOrchestrator:
                 for rp in list(self.regions.values()):
                     if not rp.is_alive():
                         continue
-                    if not self._is_ui_healthy(rp):
+                    healthy, reason = self._is_ui_healthy(rp)
+                    if not healthy:
+                        tail = rp.tail_log(10)
                         print(
-                            f"[watchdog] {rp.slot_id} 管理 UI 端口 {rp.ui_port} 无响应，"
-                            f"proxy 端口 {rp.proxy_port} 可能仍存活，执行重启...",
+                            f"[watchdog] {rp.slot_id} 管理 UI 端口 {rp.ui_port} 无响应"
+                            f"（原因：{reason}），proxy 端口 {rp.proxy_port} 可能仍存活，执行重启...",
                             flush=True,
                         )
+                        if tail:
+                            print(f"[watchdog] {rp.slot_id} region.log 尾部:\n{tail}", flush=True)
                         try:
                             rp.stop()
                         except Exception as stop_exc:
