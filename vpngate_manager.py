@@ -1416,28 +1416,22 @@ def maintain_valid_nodes(force: bool = False) -> str:
                             valid_nodes=valid_nodes_count,
                             last_refresh_at=time.time(),
                         )
-                        # 开启类型过滤时，先补齐"未知"类型，避免住宅节点因未查过而被误删
+                        # IP 类型过滤：仅影响"连接时挑选哪种节点"，不再删除节点池中的节点。
+                        # 用户明确诉求：节点只按"连不通(unavailable)"淘汰，不因 IP 类型被删。
                         if load_ui_config().get("routing_ip_type", "all") != "all":
                             backfill_unknown_ip_types()
-                        with lock:
-                            final_nodes = read_nodes()
-                            active_id = active_openvpn_node_id
-                            _ip_type_filter = load_ui_config().get("routing_ip_type", "all")
-                            if _ip_type_filter == "all":
-                                filtered = list(final_nodes)
-                            else:
+                            with lock:
+                                final_nodes = read_nodes()
+                                active_id = active_openvpn_node_id
+                                _ip_type_filter = load_ui_config().get("routing_ip_type", "all")
                                 _allowed_types = ("residential", "mobile") if _ip_type_filter == "residential" else ("hosting",)
-                                filtered = [
+                                _typed = [
                                     n for n in final_nodes
                                     if n.get("ip_type") in _allowed_types
                                     or (active_id and n.get("id") == active_id)
                                 ]
-                            if filtered:
-                                removed = len(final_nodes) - len(filtered)
-                                write_json(NODES_FILE, filtered)
-                                if removed > 0:
-                                    print(f"[节点过滤] 已清理 {removed} 个非家宽/移动节点，保留 {len(filtered)} 个节点", flush=True)
-                                    log_to_json("INFO", "Main", f"节点过滤: 清理 {removed} 个非家宽/移动节点，保留 {len(filtered)} 个")
+                                print(f"[节点过滤] 按 IP 类型({_ip_type_filter})连接，节点池保留全部 {len(final_nodes)} 个，其中符合类型 {len(_typed)} 个（不删除节点）", flush=True)
+                                log_to_json("INFO", "Main", f"节点过滤: 按类型({_ip_type_filter})连接，节点池保留 {len(final_nodes)} 个不删除，符合类型 {len(_typed)} 个")
                         if not force:
                             return message
                         # force=True（手动一键检测）：快速首连成功后不提前收工，
@@ -1502,22 +1496,17 @@ def maintain_valid_nodes(force: bool = False) -> str:
             final_nodes = read_nodes()
             active_id = active_openvpn_node_id
             _ip_type_filter = load_ui_config().get("routing_ip_type", "all")
-            if _ip_type_filter == "all":
-                filtered = list(final_nodes)
-            else:
+            if _ip_type_filter != "all":
                 _allowed_types = ("residential", "mobile") if _ip_type_filter == "residential" else ("hosting",)
-                filtered = [
+                _typed = [
                     n for n in final_nodes
                     if n.get("ip_type") in _allowed_types
                     or (active_id and n.get("id") == active_id)
                 ]
-            if filtered:
-                removed = len(final_nodes) - len(filtered)
-                write_json(NODES_FILE, filtered)
-                merged = filtered
-                if removed > 0:
-                    print(f"[节点过滤] 已清理 {removed} 个非家宽/移动节点，保留 {len(filtered)} 个节点", flush=True)
-                    log_to_json("INFO", "Main", f"节点过滤: 清理 {removed} 个非家宽/移动节点，保留 {len(filtered)} 个")
+                print(f"[节点过滤] 按 IP 类型({_ip_type_filter})连接，节点池保留全部 {len(final_nodes)} 个，其中符合类型 {len(_typed)} 个（不删除节点）", flush=True)
+                log_to_json("INFO", "Main", f"节点过滤: 按类型({_ip_type_filter})连接，节点池保留 {len(final_nodes)} 个不删除，符合类型 {len(_typed)} 个")
+            # IP 类型过滤只影响连接选择，不再删除节点池；merged 保持全部节点。
+            merged = final_nodes
 
         valid_nodes_count = len([n for n in merged if n.get("probe_status") == "available"])
         added_count = len([c for c in candidates if str(c.get("id")) not in current_ids])

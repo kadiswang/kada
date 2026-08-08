@@ -178,5 +178,49 @@ class TestNodeDeletionPolicy(unittest.TestCase):
         self.assertIn("C", kept)
 
 
+class TestIpTypeFilterKeepsPool(unittest.TestCase):
+    """IP 类型过滤只影响连接选择，不删除节点池中的节点（用户诉求：只删连不通的）。"""
+    def _run(self):
+        store = _Store([
+            {"id": "AVAIL", "probe_status": "available", "remote_host": "1.1.1.1", "remote_port": 1194, "config_file": "a.ovpn", "config_text": "A"},
+            {"id": "FAIL", "probe_status": "unavailable", "remote_host": "1.1.1.6", "remote_port": 1194, "config_file": "f.ovpn", "config_text": "F"},
+            {"id": "ACTIVE", "active": True, "probe_status": "unknown", "remote_host": "1.1.1.7", "remote_port": 1194, "config_file": "ac.ovpn", "config_text": "AC"},
+        ])
+        cfg = {"connection_enabled": False, "routing_mode": "auto", "routing_ip_type": "residential"}
+        with mock.patch.object(V, "maintenance_lock", mock.MagicMock()), \
+             mock.patch.object(V, "lock", mock.MagicMock()), \
+             mock.patch.object(V, "set_state"), \
+             mock.patch.object(V, "log_to_json"), \
+             mock.patch.object(V, "fetch_candidates", return_value=[
+                 {"id": "C_RES", "ip_type": "residential", "remote_host": "3.3.3.3", "remote_port": 1194, "config_file": "cr.ovpn", "config_text": "CR"},
+                 {"id": "C_HOST", "ip_type": "hosting", "remote_host": "3.3.3.4", "remote_port": 1194, "config_file": "ch.ovpn", "config_text": "CH"},
+                 {"id": "C_NONE", "remote_host": "3.3.3.5", "remote_port": 1194, "config_file": "cn.ovpn", "config_text": "CN"},
+             ]), \
+             mock.patch.object(V, "load_ui_config", return_value=cfg), \
+             mock.patch.object(V, "active_openvpn_running", return_value=False), \
+             mock.patch.object(V, "stop_active_openvpn"), \
+             mock.patch.object(V, "reconnect_fixed_node_if_needed"), \
+             mock.patch.object(V, "auto_switch_node"), \
+             mock.patch.object(V, "backfill_unknown_ip_types"), \
+             mock.patch.object(V, "apply_routing_filters", side_effect=lambda nodes, *a, **k: nodes), \
+             mock.patch.object(V, "read_nodes", side_effect=store.read), \
+             mock.patch.object(V, "write_json", side_effect=store.write):
+            V.is_connecting = False
+            V.maintain_valid_nodes(force=False)
+        return {n["id"] for n in store.nodes}
+
+    def test_residential_filter_keeps_hosting_and_other_nodes(self):
+        kept = self._run()
+        # 即使设为住宅IP，机房IP(C_HOST)与未查类型(C_NONE)的候选也必须保留，不能按类型删除
+        self.assertIn("C_HOST", kept)
+        self.assertIn("C_RES", kept)
+        self.assertIn("C_NONE", kept)
+        # available/active 保留
+        self.assertIn("AVAIL", kept)
+        self.assertIn("ACTIVE", kept)
+        # 仅 unavailable 旧节点被删
+        self.assertNotIn("FAIL", kept)
+
+
 if __name__ == "__main__":
     unittest.main()
