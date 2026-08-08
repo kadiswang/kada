@@ -2772,21 +2772,10 @@ class Handler(BaseHTTPRequestHandler):
                     enforce_active_node_allowed_by_routing(ui_cfg, "代理设置已更新")
                     self.send_json({"ok": True, "message": "默认出口配置已更新，已即时生效！"})
                 else:
+                    # 子出口：配置持久化是「单一事实来源」，即时下发到子进程只是锦上添花。
+                    # 子进程可能尚未启动/正在启动（其 UI 端口还没监听），转发失败绝不能阻断保存。
                     orch = globals().get("EGRESS_ORCH")
-                    target = orch.regions.get(slot_id) if orch is not None else None
-                    fwd_result = None
-                    if target is not None:
-                        # 1) 尝试立即下发到子进程（运行时生效）；子进程可能正在启动，失败不阻断保存
-                        try:
-                            fwd_result = egress_forward(target.ui_port, "/api/update_routing", {
-                                "routing_mode": routing_mode,
-                                "force_country": force_country,
-                                "routing_ip_type": routing_ip_type,
-                                "min_health_score": min_health_score,
-                            })
-                        except Exception as exc:
-                            fwd_result = {"ok": False, "error": f"子出口通信失败: {exc}"}
-                    # 2) 持久化到父配置 ui_cfg.slots[i].config（子进程重启后由 _seed_auth 重新播种）
+                    # 1) 先把配置持久化到 ui_cfg.slots[i].config（子进程启动时由 _seed_auth 应用）
                     slots = list(ui_cfg.get("slots") or [])
                     for s in slots:
                         if str(s.get("slot_id")) == slot_id:
@@ -2802,17 +2791,31 @@ class Handler(BaseHTTPRequestHandler):
                         DATA_DIR.mkdir(exist_ok=True, parents=True)
                         write_json(DATA_DIR / "ui_auth.json", ui_cfg)
                     invalidate_config_cache()
-                    # 3) 刷新父侧缓存 / 尝试启动子进程；失败不阻断保存
+                    # 2) 确保编排器拉起子进程（失败只记日志，不阻断保存）
                     try:
                         _ensure_egress_orch(ui_cfg)
                         if EGRESS_ORCH is not None:
                             EGRESS_ORCH.sync(ui_cfg)
                     except Exception as exc:
                         log_to_json("ERROR", "Egress", f"编排器同步失败(配置已保存): {exc}")
+                    # 3) 子进程若已在线（UI 端口在监听），尝试即时下发；否则跳过，
+                    #    配置已持久化，子进程就绪后会自动读到新配置生效。
+                    fwd_result = None
+                    target = orch.regions.get(slot_id) if orch is not None else None
+                    if target is not None and _quick_proxy_listen(target.ui_port):
+                        try:
+                            fwd_result = egress_forward(target.ui_port, "/api/update_routing", {
+                                "routing_mode": routing_mode,
+                                "force_country": force_country,
+                                "routing_ip_type": routing_ip_type,
+                                "min_health_score": min_health_score,
+                            })
+                        except Exception as exc:
+                            fwd_result = {"ok": False, "error": f"子出口通信失败: {exc}"}
                     if fwd_result is None:
-                        message = f"出口 {slot_id} 配置已保存。子出口尚未运行，配置将在其启动后自动生效。"
+                        message = f"出口 {slot_id} 配置已保存。子出口尚未就绪，配置将在其启动后自动生效。"
                     elif not fwd_result.get("ok"):
-                        message = f"出口 {slot_id} 配置已保存。即时下发到子进程失败：{fwd_result.get('error') or '未知错误'}，但配置已持久化，子进程重启后将自动生效。"
+                        message = f"出口 {slot_id} 配置已保存，但即时下发失败：{fwd_result.get('error') or '未知错误'}（配置已持久化，子进程重启后将自动生效）。"
                     else:
                         message = f"出口 {slot_id} 配置已更新，已即时生效！"
                     self.send_json({"ok": True, "message": message, "forwarded": fwd_result})
