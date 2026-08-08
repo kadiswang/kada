@@ -1,14 +1,16 @@
-"""手动一键检测只补测"未检测"节点；后台周期检测测全部非活动节点。
+"""手动一键检测补测"未检测/失败"节点；后台周期检测测全部非活动节点。
 
 背景：maintain_valid_nodes() 原先的"快速首连"分支一旦连上一个节点就提前
 return，导致手动点"一键检测"后大量新候选节点永远停在"未检测"。而且"周期检测"
 那段会重测所有非活动节点（含已可用的），等于把正常的也反复打扰。
 
-用户确认的正确逻辑：
-- 手动一键检测（force=True）：只补测还没测过的节点，已可用/已不可用的不重测。
+用户确认的正确逻辑（方案 A+B）：
+- 手动一键检测（force=True）：补测"还没得出结论"或"上次失败"的节点，即
+  probe_status 为 空 / unknown / not_checked（新拉取的候选）/ unavailable（上次连不通）；
+  已可用(available)与活动(active)节点不重测。
 - 后台周期检测（force=False）：维持原行为，对全部非活动节点做连通性复核。
 
-本文件锁住这两条契约。
+本文件锁住这两条契约，并单测底层的 select_nodes_to_test() 选择逻辑。
 """
 from __future__ import annotations
 
@@ -54,7 +56,10 @@ class TestManualDetectGapsOnly(unittest.TestCase):
              mock.patch.object(V, "log_to_json"), \
              mock.patch.object(V, "fetch_candidates", return_value=[
                  {"id": "C", "remote_host": "3.3.3.3", "remote_port": 1194,
-                  "config_file": "c.ovpn", "config_text": ""}
+                  "config_file": "c.ovpn", "config_text": ""},
+                 # 候选自带 unavailable：上次周期连不通的节点，一键检测应重测
+                 {"id": "U", "probe_status": "unavailable", "remote_host": "4.4.4.4",
+                  "remote_port": 1194, "config_file": "u.ovpn", "config_text": "U"},
              ]), \
              mock.patch.object(V, "load_ui_config", return_value=cfg), \
              mock.patch.object(V, "active_openvpn_running", return_value=False), \
@@ -70,19 +75,64 @@ class TestManualDetectGapsOnly(unittest.TestCase):
             V.maintain_valid_nodes(force=force)
         return calls
 
-    def test_force_true_only_tests_undetected_gap(self):
+    def test_force_true_tests_undetected_and_failed_nodes(self):
         calls = self._run(force=True)
         tested = [cid for batch in calls for cid in batch]
-        # 只应测"未检测"节点 C；已可用的 A 与活动节点 ACT 都不应被测
-        self.assertEqual(tested, ["C"])
+        # 一键检测应补测"未检测"的 C 与"上次失败"的 U
+        self.assertIn("C", tested)
+        self.assertIn("U", tested)
+        # 已可用的 A 与活动节点 ACT 都不应被测
+        self.assertNotIn("A", tested)
+        self.assertNotIn("ACT", tested)
 
     def test_force_false_tests_all_non_active(self):
         calls = self._run(force=False)
         tested = [cid for batch in calls for cid in batch]
-        # 后台周期：测全部非活动节点（A 已可用 + C 未检测），不含活动节点 ACT
+        # 后台周期：测全部非活动节点（A 已可用 + C 未检测 + U 失败），不含活动节点 ACT
         self.assertIn("A", tested)
         self.assertIn("C", tested)
+        self.assertIn("U", tested)
         self.assertNotIn("ACT", tested)
+
+
+class TestSelectNodesToTest(unittest.TestCase):
+    """直接单测底层选择逻辑，避免内联条件再次漏掉 not_checked / unavailable。"""
+
+    def _nodes(self):
+        return [
+            {"id": "AVAIL", "probe_status": "available"},
+            {"id": "NOTCK", "probe_status": "not_checked"},
+            {"id": "UNKNOWN", "probe_status": "unknown"},
+            {"id": "EMPTY", "probe_status": ""},
+            {"id": "NONE", "probe_status": None},
+            {"id": "FAIL", "probe_status": "unavailable"},
+            {"id": "ACTIVE", "active": True, "probe_status": "not_checked"},
+        ]
+
+    def test_force_true_covers_not_checked_unknown_empty_none_unavailable(self):
+        out = V.select_nodes_to_test(self._nodes(), set(), force=True)
+        ids = {n["id"] for n in out}
+        # 新拉取/未检测/上次失败都要测
+        for expected in ("NOTCK", "UNKNOWN", "EMPTY", "NONE", "FAIL"):
+            self.assertIn(expected, ids)
+        # 已可用、活动节点不测
+        self.assertNotIn("AVAIL", ids)
+        self.assertNotIn("ACTIVE", ids)
+
+    def test_force_true_skips_initial_tested_even_if_failed(self):
+        # 快速首连阶段已测过且失败的不重复测
+        out = V.select_nodes_to_test(self._nodes(), {"FAIL"}, force=True)
+        ids = {n["id"] for n in out}
+        self.assertNotIn("FAIL", ids)
+        self.assertIn("NOTCK", ids)
+
+    def test_force_false_rechecks_every_non_active(self):
+        out = V.select_nodes_to_test(self._nodes(), set(), force=False)
+        ids = {n["id"] for n in out}
+        # 周期检测：全部非活动节点都复查，含已可用
+        for expected in ("AVAIL", "NOTCK", "UNKNOWN", "EMPTY", "NONE", "FAIL"):
+            self.assertIn(expected, ids)
+        self.assertNotIn("ACTIVE", ids)
 
 
 if __name__ == "__main__":

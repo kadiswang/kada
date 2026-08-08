@@ -803,6 +803,28 @@ def test_node_by_id(node_id: str) -> dict[str, Any]:
         else:
             return {}
 
+def select_nodes_to_test(nodes: list[dict], initial_tested_ids: set, force: bool) -> list[dict]:
+    """决定本次需要拨号测速的节点集合（收敛检测选择逻辑，便于单测锁住契约）。
+
+    - force=True（手动一键检测）：补测"尚未得出结论"或"上次失败"的节点，
+      即 probe_status 为空 / unknown / not_checked（新拉取的候选）/ unavailable
+      （上次拨号连不通）的节点；已可用(available)与活动(active)节点不重测，
+      避免反复打扰正常连接。快速首连阶段(initial_tested_ids)已测过的不再重复。
+    - force=False（后台周期检测）：对全部非活动且未被首连测过的节点做连通性复核。
+    """
+    if force:
+        return [
+            n for n in nodes
+            if not n.get("active")
+            and n.get("id") not in initial_tested_ids
+            and n.get("probe_status") in (None, "", "unknown", "not_checked", "unavailable")
+        ]
+    return [
+        n for n in nodes
+        if not n.get("active") and n.get("id") not in initial_tested_ids
+    ]
+
+
 def test_multiple_nodes(node_ids: list[str]) -> list[dict[str, Any]]:
     with lock:
         nodes = read_nodes()
@@ -1419,21 +1441,10 @@ def maintain_valid_nodes(force: bool = False) -> str:
         # Test remaining non-active nodes from the list
         with lock:
             current_nodes = read_nodes()
-            # force=True（手动一键检测）：只补测"未检测"节点（probe_status 缺失/unknown），
-            # 已可用/已不可用的节点不再重复拨号测速，避免正常节点被反复打扰。
-            # force=False（后台周期检测）：维持原行为，对全部非活动节点做连通性复核。
-            if force:
-                to_test = [
-                    n for n in current_nodes
-                    if not n.get("active")
-                    and n.get("id") not in initial_tested_ids
-                    and (n.get("probe_status") in (None, "", "unknown"))
-                ]
-            else:
-                to_test = [
-                    n for n in current_nodes
-                    if not n.get("active") and n.get("id") not in initial_tested_ids
-                ]
+            # 选择待检测节点：一键检测(force=True)补测未检测(not_checked/unknown)与
+            # 上次失败(unavailable)的节点；周期检测(force=False)复核全部非活动节点。
+            # 逻辑统一收敛到 select_nodes_to_test()，便于单测锁住契约（含方案 A+B 修复）。
+            to_test = select_nodes_to_test(current_nodes, initial_tested_ids, force)
             to_test_ids = [n["id"] for n in to_test]
             
         msg = f"开始对列表中所有候选节点进行周期连通性与延迟测试，待检测节点共 {len(to_test_ids)} 个"
