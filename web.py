@@ -1457,6 +1457,10 @@ INDEX_HTML = r"""<!doctype html>
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 00.33 1.82l.06.06a2 2 0 010 2.83 2 2 0 01-2.83 0l-.06-.06a1.65 1.65 0 00-1.82-.33 1.65 1.65 0 00-1 1.51V21a2 2 0 01-2 2 2 2 0 01-2-2v-.09A1.65 1.65 0 009 19.4a1.65 1.65 0 00-1.82.33l-.06.06a2 2 0 01-2.83 0 2 2 0 010-2.83l.06-.06A1.65 1.65 0 004.68 15a1.65 1.65 0 00-1.51-1H3a2 2 0 01-2-2 2 2 0 012-2h.09A1.65 1.65 0 004.6 9a1.65 1.65 0 00-.33-1.82l-.06-.06a2 2 0 010-2.83 2 2 0 012.83 0l.06.06A1.65 1.65 0 009 4.68a1.65 1.65 0 001-1.51V3a2 2 0 012-2 2 2 0 012 2v.09a1.65 1.65 0 001 1.51 1.65 1.65 0 001.82-.33l.06-.06a2 2 0 012.83 0 2 2 0 010 2.83l-.06.06a1.65 1.65 0 00-.33 1.82V9a1.65 1.65 0 001.51 1H21a2 2 0 012 2 2 2 0 01-2 2h-.09a1.65 1.65 0 00-1.51 1z"/></svg>
             代理设置
           </a>
+          <a class="nav-item sub-item" href="javascript:void(0)" onclick="event.stopPropagation(); openIntelModal();">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 3l7 4v5c0 4.4-3 8.4-7 9-4-.6-7-4.6-7-9V7l7-4z"/><path d="M9 12l2 2 4-4"/></svg>
+            风控情报
+          </a>
           <a class="nav-item sub-item" href="javascript:void(0)" onclick="event.stopPropagation(); openGatewayModal();">
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M19 11H5m14 0a2 2 0 012 2v6a2 2 0 01-2 2H5a2 2 0 01-2-2v-6a2 2 0 012-2m14 0V9a2 2 0 00-2-2M5 11V9a2 2 0 012-2m0 0V5a2 2 0 012-2h6a2 2 0 012 2v2M7 7h10"/></svg>
             网关设置
@@ -1781,34 +1785,6 @@ INDEX_HTML = r"""<!doctype html>
           </div>
         </div>
 
-        <div style="border-top: 1px dashed var(--border); padding-top: 16px; margin-bottom: 4px;">
-          <label style="font-size: 13px; font-weight: 600; color: var(--text-primary); margin-bottom: 8px; display: flex; align-items: center; gap: 6px;">
-            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="width:16px;height:16px;color:var(--primary)"><path d="M12 3l7 4v5c0 4.4-3 8.4-7 9-4-.6-7-4.6-7-9V7l7-4z"/><path d="M9 12l2 2 4-4"/></svg>
-            风控情报增强（proxycheck.io）
-          </label>
-          <p class="form-hint" style="font-size: 11px; color: var(--text-muted); margin-bottom: 12px; line-height: 1.5;">
-            额外查询节点 IP 是否已被各大网站的风控库拉黑，以及同网段有多少人在挤。
-            开启后「健康度」会同时参考这项，被标记的节点分数会自动降下来。<br>
-            不填密钥也能用（约 100 次/天）；到
-            <a href="https://proxycheck.io/" target="_blank" rel="noopener noreferrer" style="color: var(--primary);">proxycheck.io</a>
-            免费注册可提升到 1000 次/天。
-          </p>
-
-          <div class="form-group" style="margin-bottom: 12px;">
-            <label class="form-label" for="net_proxycheck_enabled">启用风控情报</label>
-            <input type="checkbox" id="net_proxycheck_enabled" style="width:16px;height:16px;accent-color:var(--primary);" onchange="toggleProxycheckFields()">
-          </div>
-
-          <div id="proxycheck_fields" style="display:none;">
-            <div class="form-group" style="margin-bottom: 12px;">
-              <label class="form-label" for="net_proxycheck_key">API 密钥（可选）</label>
-              <input type="password" id="net_proxycheck_key" class="input-field" placeholder="留空则匿名调用" autocomplete="new-password">
-              <p class="form-hint" id="net_proxycheck_key_hint" style="font-size: 11px; color: var(--text-muted); margin-top: 6px; line-height: 1.4;">留空则匿名调用免费额度。</p>
-              <input type="hidden" id="net_proxycheck_key_cleared" value="0">
-            </div>
-          </div>
-        </div>
-
         <div style="border-top: 1px dashed var(--border); padding-top: 16px; margin-bottom: 16px;">
           <div class="form-group" style="margin-bottom: 16px;">
             <label class="form-label">IP 出站路由模式</label>
@@ -1876,6 +1852,55 @@ INDEX_HTML = r"""<!doctype html>
         <div style="display: flex; gap: 12px; justify-content: flex-end;">
           <button type="button" onclick="closeNetworkModal()" style="height: 40px; padding: 0 16px; font-weight: 600; border-radius: 8px; border: 1px solid var(--border-color); background: transparent; color: var(--text-secondary); cursor: pointer;">取消</button>
           <button type="submit" id="network_submit_btn" class="btn-primary" style="height: 40px; padding: 0 20px; font-weight: 600; border-radius: 8px;">保存修改</button>
+        </div>
+      </form>
+    </div>
+  </div>
+
+
+  <!-- 风控情报 Modal (proxycheck.io) -->
+  <div id="intel_modal" class="modal">
+    <div class="modal-content" style="max-width: 480px;">
+      <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 24px;">
+        <h3 style="margin: 0; font-size: 18px; font-weight: 700; color: var(--text-primary); display: flex; align-items: center; gap: 8px;">
+          <svg xmlns="http://www.w3.org/2000/svg" style="width:20px; height:20px; color: var(--primary);" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><path stroke-linecap="round" stroke-linejoin="round" d="M12 3l7 4v5c0 4.4-3 8.4-7 9-4-.6-7-4.6-7-9V7l7-4z"/><path stroke-linecap="round" stroke-linejoin="round" d="M9 12l2 2 4-4" /></svg>
+          风控情报（proxycheck.io）
+        </h3>
+        <button type="button" onclick="closeIntelModal()" style="background: transparent; border: none; padding: 4px; cursor: pointer; color: var(--text-secondary); width: 28px; height: 28px; display: flex; align-items: center; justify-content: center; border-radius: 50%;" onmouseover="this.style.background='#f1f5f9'" onmouseout="this.style.background='transparent'">
+          <svg xmlns="http://www.w3.org/2000/svg" style="width:18px; height:18px;" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2.5"><path stroke-linecap="round" stroke-linejoin="round" d="M6 18L18 6M6 6l12 12" /></svg>
+        </button>
+      </div>
+
+      <div id="intel_error" style="color: var(--danger); font-size: 13px; margin-bottom: 16px; padding: 8px 12px; background: rgba(244,63,94,0.1); border: 1px solid rgba(244,63,94,0.2); border-radius: 6px; display: none;"></div>
+      <div id="intel_success" style="color: var(--success); font-size: 13px; margin-bottom: 16px; padding: 8px 12px; background: rgba(16,185,129,0.1); border: 1px solid rgba(16,185,129,0.2); border-radius: 6px; display: none;"></div>
+
+      <form id="intel_form" onsubmit="saveIntel(event)">
+        <p class="form-hint" style="font-size: 12px; color: var(--text-muted); margin-bottom: 16px; line-height: 1.5;">
+          额外查询节点 IP 是否已被各大网站的风控库拉黑，以及同网段有多少人在挤。
+          开启后「健康度」会同时参考这项，被标记的节点分数会自动降下来。<br>
+          不填密钥也能用（约 100 次/天）；到
+          <a href="https://proxycheck.io/" target="_blank" rel="noopener noreferrer" style="color: var(--primary);">proxycheck.io</a>
+          免费注册可提升到 1000 次/天。自部署环境密钥会显示在下方，方便你确认是否填对。
+        </p>
+
+        <div class="form-group" style="margin-bottom: 16px;">
+          <label class="form-label" for="intel_enabled">启用风控情报</label>
+          <input type="checkbox" id="intel_enabled" style="width:16px;height:16px;accent-color:var(--primary);" onchange="toggleIntelFields()">
+        </div>
+
+        <div id="intel_fields" style="display:none;">
+          <div class="form-group" style="margin-bottom: 12px;">
+            <label class="form-label" for="intel_key">API 密钥</label>
+            <input type="text" id="intel_key" class="input-field" placeholder="留空则匿名调用（免费 100 次/天）" autocomplete="off" spellcheck="false">
+            <p class="form-hint" id="intel_key_hint" style="font-size: 11px; color: var(--text-muted); margin-top: 6px; line-height: 1.4;">已保存的密钥会显示在上面，可直接核对；清空后保存即删除密钥。</p>
+            <input type="hidden" id="intel_key_cleared" value="0">
+            <a href="javascript:void(0)" onclick="clearIntelKey()" style="font-size: 12px; color: var(--danger); margin-top: 6px; display: inline-block;">清除已保存的密钥</a>
+          </div>
+        </div>
+
+        <div style="display: flex; gap: 12px; justify-content: flex-end; margin-top: 8px;">
+          <button type="button" onclick="closeIntelModal()" style="height: 40px; padding: 0 16px; font-weight: 600; border-radius: 8px; border: 1px solid var(--border-color); background: transparent; color: var(--text-secondary); cursor: pointer;">取消</button>
+          <button type="submit" id="intel_submit_btn" class="btn-primary" style="height: 40px; padding: 0 20px; font-weight: 600; border-radius: 8px;">保存</button>
         </div>
       </form>
     </div>
@@ -4140,26 +4165,6 @@ function setNetEgress() {
     $("net_upstream_pass").value = up.pass || "";
   }
 
-  // 风控情报（全局配置，同样从 state 读取）
-  const pc = (state && state.proxycheck) || {};
-  const pcEnabled = $("net_proxycheck_enabled");
-  if (pcEnabled) {
-    pcEnabled.checked = !!pc.enabled;
-    toggleProxycheckFields();
-    // 密钥不回显（后端只回传 key_set 标记），留空提交视为不改动
-    const keyEl = $("net_proxycheck_key");
-    if (keyEl) keyEl.value = "";
-    const clearedEl = $("net_proxycheck_key_cleared");
-    if (clearedEl) clearedEl.value = "0";
-    const hint = $("net_proxycheck_key_hint");
-    if (hint) {
-      hint.innerHTML = pc.key_set
-        ? '已保存密钥（不显示）。留空提交则保持不变，'
-          + '<a href="javascript:void(0)" onclick="clearProxycheckKey()" style="color:var(--danger);">点此清除改回匿名</a>。'
-        : "留空则匿名调用免费额度。";
-    }
-  }
-
   // 端口（仅展示，不可改）
   $("net_proxy_port").value = e.proxy_port || 7928;
 }
@@ -4173,19 +4178,103 @@ function toggleUpstreamFields() {
   $("upstream_proxy_fields").style.display = enabled ? "block" : "none";
 }
 
-function toggleProxycheckFields() {
-  const el = $("net_proxycheck_enabled");
-  const box = $("proxycheck_fields");
+function openIntelModal() {
+  const m = $("intel_modal");
+  if (!m) return;
+  m.style.display = "flex";
+  const pc = (state && state.proxycheck) || {};
+  const enabledEl = $("intel_enabled");
+  if (enabledEl) {
+    enabledEl.checked = !!pc.enabled;
+    toggleIntelFields();
+  }
+  // 自部署：把已保存的密钥回显出来，方便核对是否填对
+  const keyEl = $("intel_key");
+  if (keyEl) keyEl.value = pc.api_key || "";
+  const clearedEl = $("intel_key_cleared");
+  if (clearedEl) clearedEl.value = "0";
+  const hint = $("intel_key_hint");
+  if (hint) {
+    hint.textContent = pc.key_set
+      ? "已保存的密钥显示在上方，可直接核对；清空后保存即删除。"
+      : "留空则匿名调用免费额度（约 100 次/天）。";
+  }
+  const err = $("intel_error");
+  const suc = $("intel_success");
+  if (err) err.style.display = "none";
+  if (suc) suc.style.display = "none";
+}
+
+function closeIntelModal() {
+  $("intel_modal").style.display = "none";
+}
+
+function toggleIntelFields() {
+  const el = $("intel_enabled");
+  const box = $("intel_fields");
   if (el && box) box.style.display = el.checked ? "block" : "none";
 }
 
-function clearProxycheckKey() {
-  const clearedEl = $("net_proxycheck_key_cleared");
-  const keyEl = $("net_proxycheck_key");
-  const hint = $("net_proxycheck_key_hint");
+function clearIntelKey() {
+  const clearedEl = $("intel_key_cleared");
+  const keyEl = $("intel_key");
+  const hint = $("intel_key_hint");
   if (clearedEl) clearedEl.value = "1";
   if (keyEl) keyEl.value = "";
   if (hint) hint.textContent = "保存后将清除已存密钥，改为匿名调用。";
+}
+
+async function saveIntel(e) {
+  e.preventDefault();
+  const errorDivEl = $("intel_error");
+  const successDiv = $("intel_success");
+  const submitBtn = $("intel_submit_btn");
+
+  errorDivEl.style.display = "none";
+  successDiv.style.display = "none";
+
+  const enabledEl = $("intel_enabled");
+  const keyEl = $("intel_key");
+  const clearedEl = $("intel_key_cleared");
+  const proxycheck = {
+    enabled: !!(enabledEl && enabledEl.checked),
+    api_key: (keyEl && keyEl.value || "").trim(),
+    key_cleared: !!(clearedEl && clearedEl.value === "1")
+  };
+
+  submitBtn.disabled = true;
+  submitBtn.textContent = "正在保存...";
+
+  try {
+    const res = await fetchWithCsrf("./api/save_proxycheck", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ proxycheck: proxycheck })
+    });
+
+    if (res && res.ok) {
+      successDiv.textContent = (res.message || "配置保存成功") + "，已即时生效！";
+      successDiv.style.display = "block";
+      // 同步本地 state，避免关闭再打开时回显滞后
+      if (state) {
+        state.proxycheck = {
+          enabled: proxycheck.enabled,
+          api_key: proxycheck.key_cleared ? "" : proxycheck.api_key,
+          key_set: proxycheck.key_cleared ? false : !!proxycheck.api_key
+        };
+      }
+      setTimeout(closeIntelModal, 1200);
+    } else {
+      errorDivEl.textContent = (res && res.error) || "保存失败，请重试";
+      errorDivEl.style.display = "block";
+    }
+  } catch (err) {
+    errorDivEl.textContent = "网络错误：" + (err && err.message ? err.message : err);
+    errorDivEl.style.display = "block";
+  } finally {
+    submitBtn.disabled = false;
+    submitBtn.textContent = "保存";
+  }
 }
 
 async function saveCredentials(e) {
@@ -4304,13 +4393,6 @@ async function saveNetwork(e) {
   const upstreamUser = ($("net_upstream_user").value || "").trim();
   const upstreamPass = ($("net_upstream_pass").value || "").trim();
 
-  const pcEnabledEl = $("net_proxycheck_enabled");
-  const proxycheck = {
-    enabled: !!(pcEnabledEl && pcEnabledEl.checked),
-    api_key: (($("net_proxycheck_key") && $("net_proxycheck_key").value) || "").trim(),
-    key_cleared: (($("net_proxycheck_key_cleared") && $("net_proxycheck_key_cleared").value) === "1")
-  };
-
   if (upstreamEnabled) {
     if (!upstreamHost) {
       errorDivEl.textContent = "请输入上游代理地址";
@@ -4343,7 +4425,6 @@ async function saveNetwork(e) {
         force_country: forceCountry,
         routing_ip_type: routingIpType,
         min_health_score: minHealthScore,
-        proxycheck: proxycheck,
         upstream_proxy: upstreamEnabled ? {
           enabled: true,
           type: upstreamType,

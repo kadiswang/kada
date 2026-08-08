@@ -270,11 +270,13 @@ def get_state() -> dict[str, Any]:
     state["favorite_node_ids"] = ui_cfg.get("favorite_node_ids", [])
     state["fav_fail_fallback"] = ui_cfg.get("fav_fail_fallback", True)
     state["upstream_proxy"] = ui_cfg.get("upstream_proxy", { "enabled": False })
-    # 密钥不回传前端，只告诉界面"是否已设置"，避免明文密钥出现在页面源码里
+    # 自部署场景：回显明文密钥，方便用户确认是否填对（仅自己可见）。
     _pc = ui_cfg.get("proxycheck") or {}
+    _pc_key = str(_pc.get("api_key") or "").strip()
     state["proxycheck"] = {
         "enabled": bool(_pc.get("enabled")),
-        "key_set": bool(str(_pc.get("api_key") or "").strip()),
+        "api_key": _pc_key,
+        "key_set": bool(_pc_key),
     }
     state["country_translations"] = vpn_utils.COUNTRY_TRANSLATIONS
     state["maintenance_running"] = maintenance_lock.locked()
@@ -2757,22 +2759,6 @@ class Handler(BaseHTTPRequestHandler):
                 # 上游代理是全局配置（节点池只由父进程拉取一次，所有出口共用）
                 ui_cfg["upstream_proxy"] = upstream_proxy
 
-                # proxycheck.io 风控情报，同样是全局配置
-                pc_payload = payload.get("proxycheck")
-                if isinstance(pc_payload, dict):
-                    old_pc = ui_cfg.get("proxycheck") or {}
-                    new_key = str(pc_payload.get("api_key") or "").strip()
-                    if pc_payload.get("key_cleared"):
-                        # 用户显式点了"清除密钥"
-                        new_key = ""
-                    elif not new_key:
-                        # 输入框留空 = 不改动，沿用已保存的密钥
-                        # （前端不回显密钥，留空提交不能把已有密钥抹掉）
-                        new_key = str(old_pc.get("api_key") or "").strip()
-                    ui_cfg["proxycheck"] = {
-                        "enabled": bool(pc_payload.get("enabled")),
-                        "api_key": new_key,
-                    }
                 if slot_id in ("", "__default__"):
                     ui_cfg["routing_mode"] = routing_mode
                     ui_cfg["force_country"] = force_country
@@ -2818,6 +2804,30 @@ class Handler(BaseHTTPRequestHandler):
                     if EGRESS_ORCH is not None:
                         EGRESS_ORCH.sync(ui_cfg)
                     self.send_json({"ok": True, "message": f"出口 {slot_id} 配置已更新，已即时生效！", "forwarded": fwd_result})
+            except Exception as exc:
+                self.send_json({"ok": False, "error": str(exc)}, HTTPStatus.INTERNAL_SERVER_ERROR)
+        elif effective_path == "/api/save_proxycheck":
+            # 风控情报（proxycheck.io）独立保存接口：启用开关 + API 密钥。
+            # 自部署场景，密钥回显到页面，因此留空即代表用户主动清空（删除），
+            # 不再沿用旧密钥；点击"清除密钥"会显式置 key_cleared。
+            try:
+                payload = self.read_json_body()
+                pc_payload = payload.get("proxycheck")
+                if not isinstance(pc_payload, dict):
+                    self.send_json({"ok": False, "error": "参数错误"}); return
+                ui_cfg = _cached_load_ui_config()
+                new_key = str(pc_payload.get("api_key") or "").strip()
+                if pc_payload.get("key_cleared"):
+                    new_key = ""
+                ui_cfg["proxycheck"] = {
+                    "enabled": bool(pc_payload.get("enabled")),
+                    "api_key": new_key,
+                }
+                with lock:
+                    DATA_DIR.mkdir(exist_ok=True, parents=True)
+                    write_json(DATA_DIR / "ui_auth.json", ui_cfg)
+                invalidate_config_cache()
+                self.send_json({"ok": True, "message": "风控情报设置已保存，已即时生效！"})
             except Exception as exc:
                 self.send_json({"ok": False, "error": str(exc)}, HTTPStatus.INTERNAL_SERVER_ERROR)
         elif effective_path == "/api/connect":
