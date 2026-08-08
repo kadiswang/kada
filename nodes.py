@@ -538,10 +538,19 @@ def select_best_node(
     else:
         cands = list(nodes)
 
-    if ip_type == "residential":
-        cands = [n for n in cands if n.get("ip_type") in ("residential", "mobile")]
-    elif ip_type == "hosting":
-        cands = [n for n in cands if n.get("ip_type") == "hosting"]
+    # 与 apply_routing_filters 保持一致：开启类型过滤时，尚未识别（unknown/空）
+    # 的节点也允许参与选择。子出口消费共享池时，父进程可能还没完成类型识别，
+    # 若直接把 unknown 全部丢弃，会导致"设置了住宅 IP 却无节点可连"。
+    def _ip_type_allowed(n: dict[str, Any]) -> bool:
+        t = n.get("ip_type") or "unknown"
+        if ip_type == "residential":
+            return t in ("residential", "mobile", "unknown") or t == ""
+        if ip_type == "hosting":
+            return t in ("hosting", "unknown") or t == ""
+        return True
+
+    if ip_type in ("residential", "hosting"):
+        cands = [n for n in cands if _ip_type_allowed(n)]
 
     if min_health > 0:
         cands = [n for n in cands if effective_health_score(n) >= min_health]

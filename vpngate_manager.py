@@ -3023,6 +3023,8 @@ def aggregate_egress_status() -> list[dict[str, Any]]:
             port = 0
         if not slot_id or not port:
             continue
+        # 持久化路由配置：子进程不在线时，卡片/节点列表仍按用户保存的配置显示与过滤。
+        route_cfg = _get_egress_routing_config(slot_id)
         entry: dict[str, Any] = {
             "slot_id": slot_id,
             "is_default": False,
@@ -3030,6 +3032,12 @@ def aggregate_egress_status() -> list[dict[str, Any]]:
             "proxy_port": port,
             # 以配置为准：即便编排器未启动，也能正确显示该出口（标红=未连接）
             "alive": _quick_proxy_listen(port),
+            "routing_mode": route_cfg.get("routing_mode", "auto"),
+            "force_country": route_cfg.get("force_country", ""),
+            "routing_ip_type": route_cfg.get("routing_ip_type", "all"),
+            "min_health_score": int(route_cfg.get("min_health_score", 0) or 0),
+            "fixed_node_id": route_cfg.get("fixed_node_id", ""),
+            "connection_enabled": bool(route_cfg.get("connection_enabled", True)),
         }
         rp = orch_map.get(slot_id)
         # 子进程日志路径（崩溃排查用）+ 崩溃标志（编排器曾拉起但进程已死）

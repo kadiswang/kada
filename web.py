@@ -3284,6 +3284,31 @@ function _buildEgressCardHTML(e, mode) {
   const country = e.force_country ? translateCountry(e.force_country) : "";
   const showCountry = country && (e.routing_mode === "fixed_region");
 
+  // 代理配置摘要：自动/固定地区/固定IP/收藏 + IP类型 + 健康度阈值
+  const ROUTING_MODE_LABELS = {
+    auto: "自动选最快",
+    fixed_region: "固定地区",
+    fixed_ip: "固定IP",
+    favorites: "收藏节点"
+  };
+  const IP_TYPE_LABELS = {
+    all: "所有IP",
+    residential: "住宅IP",
+    hosting: "机房IP"
+  };
+  const routingModeLabel = ROUTING_MODE_LABELS[e.routing_mode] || ROUTING_MODE_LABELS.auto;
+  const ipTypeLabel = IP_TYPE_LABELS[e.routing_ip_type] || IP_TYPE_LABELS.all;
+  let configSummary = routingModeLabel;
+  if (e.routing_mode === "fixed_region" && country) {
+    configSummary += "：" + country;
+  } else if (e.routing_mode === "fixed_ip" && e.fixed_node_id) {
+    configSummary += "：" + e.fixed_node_id;
+  }
+  configSummary += " | " + ipTypeLabel;
+  if ((e.min_health_score || 0) > 0) {
+    configSummary += " | 健康度≥" + e.min_health_score;
+  }
+
   // 状态徽标（与主页一致的小药丸样式）
   let statusBadge;
   if (isDown) {
@@ -3296,12 +3321,17 @@ function _buildEgressCardHTML(e, mode) {
     statusBadge = "<span style='font-size:11px;color:#059669;background:rgba(5,150,105,0.10);padding:1px 8px;border-radius:10px;border:1px solid rgba(5,150,105,0.2);'>运行中</span>";
   }
 
-  // 节点信息简述
-  const nodeBrief = e.active_node_id
-    ? ("<span style='color:var(--text-muted);font-size:12px;font-family:ui-monospace,\"SF Mono\",Menlo,monospace;'>" + escAttr(e.active_node_id) + "</span>")
-    : (e.last_check_message
-      ? "<span style='color:var(--text-muted);font-size:12px;'>" + escAttr(e.last_check_message) + "</span>"
-      : "<span style='color:var(--text-muted);font-size:12px;'>未连接</span>");
+  // 节点信息简述 / 未连接时的诊断提示
+  let nodeBrief = "";
+  if (e.active_node_id) {
+    nodeBrief = "<span style='color:var(--text-muted);font-size:12px;font-family:ui-monospace,\"SF Mono\",Menlo,monospace;'>" + escAttr(e.active_node_id) + "</span>";
+  } else if (e.last_check_message) {
+    nodeBrief = "<span style='color:var(--text-muted);font-size:12px;'>" + escAttr(e.last_check_message) + "</span>";
+  } else if (isDown) {
+    nodeBrief = "<span style='color:var(--text-muted);font-size:12px;'>子出口尚未启动，点击选中查看日志</span>";
+  } else {
+    nodeBrief = "<span style='color:var(--text-muted);font-size:12px;'>正在等待父进程共享可用节点...</span>";
+  }
 
   // 操作按钮（仅出站管理页显示，主页不显示）
   // 未启动的出口也要能删除，否则子进程起不来时用户删不掉。
@@ -3333,17 +3363,19 @@ function _buildEgressCardHTML(e, mode) {
           ? "<path d='M18.364 18.364A9 9 0 005.636 5.636m12.728 12.728A9 9 0 015.636 5.636m12.728 12.728L5.636 5.636'/>"
           : "<path d='M13 10V3L4 14h7v7l9-11h-7z'/>") +
       "</svg></div>" +
-    // 中间信息区（与主页一致的两行布局）
+    // 中间信息区：名称 + 配置摘要 + 节点/诊断信息
     "<div style='flex:1;min-width:0;'>" +
-      "<div style='display:flex;align-items:center;gap:8px;'>" +
+      "<div style='display:flex;align-items:center;gap:8px;flex-wrap:wrap;'>" +
         statusBadge +
         "<strong style='font-size:13px;color:var(--text-primary);'>" + escAttr(titleLabel) + "</strong>" +
-        (showCountry ? "<span style='font-size:11px;color:var(--primary,#6366f1);background:rgba(99,102,241,0.08);padding:1px 7px;border-radius:6px;'>" + escAttr(country) + "</span>" : "") +
         (isSelected ? "<span style='font-size:10px;color:var(--primary,#6366f1);background:rgba(99,102,241,0.10);padding:1px 6px;border-radius:6px;'>已选中</span>" : "") +
       "</div>" +
-      "<div style='margin-top:3px;display:flex;align-items:center;gap:8px;'>" +
-        nodeBrief +
+      "<div style='margin-top:3px;display:flex;align-items:center;gap:8px;flex-wrap:wrap;'>" +
+        "<span style='color:var(--text-muted);font-size:12px;'>" + escAttr(configSummary) + "</span>" +
         "<span style='color:var(--text-muted);font-size:11px;'>" + (isDown ? "" : ":" + port + "") + "</span>" +
+      "</div>" +
+      "<div style='margin-top:2px;display:flex;align-items:center;gap:8px;flex-wrap:wrap;'>" +
+        nodeBrief +
       "</div>" +
     "</div>" +
     // 右侧操作区（出站管理显示按钮，主页显示箭头）
@@ -3379,6 +3411,30 @@ function _buildHomeEgressSummaryHTML(e) {
   // 国家标签（仅当配置了固定国家时显示，避免每行都显示"自动"）
   const country = e.force_country ? translateCountry(e.force_country) : "";
   const showCountry = country && (e.routing_mode === "fixed_region");
+  // 代理配置摘要（与出站管理页统一）
+  const ROUTING_MODE_LABELS = {
+    auto: "自动选最快",
+    fixed_region: "固定地区",
+    fixed_ip: "固定IP",
+    favorites: "收藏节点"
+  };
+  const IP_TYPE_LABELS = {
+    all: "所有IP",
+    residential: "住宅IP",
+    hosting: "机房IP"
+  };
+  const routingModeLabel = ROUTING_MODE_LABELS[e.routing_mode] || ROUTING_MODE_LABELS.auto;
+  const ipTypeLabel = IP_TYPE_LABELS[e.routing_ip_type] || IP_TYPE_LABELS.all;
+  let configSummary = routingModeLabel;
+  if (e.routing_mode === "fixed_region" && country) {
+    configSummary += "：" + country;
+  } else if (e.routing_mode === "fixed_ip" && e.fixed_node_id) {
+    configSummary += "：" + e.fixed_node_id;
+  }
+  configSummary += " | " + ipTypeLabel;
+  if ((e.min_health_score || 0) > 0) {
+    configSummary += " | 健康度≥" + e.min_health_score;
+  }
   // 状态徽标
   let statusBadge;
   if (isDown) {
@@ -3390,12 +3446,6 @@ function _buildHomeEgressSummaryHTML(e) {
   } else {
     statusBadge = "<span style='font-size:11px;color:#059669;background:rgba(5,150,105,0.10);padding:1px 8px;border-radius:10px;border:1px solid rgba(5,150,105,0.2);'>运行中</span>";
   }
-  // 节点信息（单行简述）
-  const nodeBrief = e.active_node_id
-    ? ("<span style='color:var(--text-muted);font-size:12px;font-family:ui-monospace,\"SF Mono\",Menlo,monospace;'>" + escAttr(e.active_node_id) + "</span>")
-    : (e.last_check_message
-      ? "<span style='color:var(--text-muted);font-size:12px;'>" + escAttr(e.last_check_message) + "</span>"
-      : "<span style='color:var(--text-muted);font-size:12px;'>未连接</span>");
   const selectedBg = isSelected ? "background: rgba(99,102,241,0.06); border-color: rgba(99,102,241,0.25);" : "";
   return "<div style='display:flex;align-items:center;gap:12px;padding:10px 14px;border-radius:10px;border:1px solid var(--border-color,#e2e8f0);background:var(--surface,#ffffff);cursor:pointer;transition:all 0.15s;" + selectedBg + "' onclick=\"selectHomeEgressCard('" + escAttr(slotKey) + "')\">" +
     // 左侧图标
@@ -3409,14 +3459,13 @@ function _buildHomeEgressSummaryHTML(e) {
       "</svg></div>" +
     // 中间信息区
     "<div style='flex:1;min-width:0;'>" +
-      "<div style='display:flex;align-items:center;gap:8px;'>" +
+      "<div style='display:flex;align-items:center;gap:8px;flex-wrap:wrap;'>" +
         statusBadge +
         "<strong style='font-size:13px;color:var(--text-primary);'>" + escAttr(titleLabel) + "</strong>" +
-        (showCountry ? "<span style='font-size:11px;color:var(--primary,#6366f1);background:rgba(99,102,241,0.08);padding:1px 7px;border-radius:6px;'>" + escAttr(country) + "</span>" : "") +
         (isSelected ? "<span style='font-size:10px;color:var(--primary,#6366f1);background:rgba(99,102,241,0.10);padding:1px 6px;border-radius:6px;'>已选中</span>" : "") +
       "</div>" +
-      "<div style='margin-top:3px;display:flex;align-items:center;gap:8px;'>" +
-        nodeBrief +
+      "<div style='margin-top:3px;display:flex;align-items:center;gap:8px;flex-wrap:wrap;'>" +
+        "<span style='color:var(--text-muted);font-size:12px;'>" + escAttr(configSummary) + "</span>" +
         "<span style='color:var(--text-muted);font-size:11px;'>:" + port + "</span>" +
       "</div>" +
     "</div>" +
