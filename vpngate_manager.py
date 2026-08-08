@@ -2681,6 +2681,29 @@ class Handler(BaseHTTPRequestHandler):
                 self.send_json({"ok": True, "egress": aggregate_egress_status()})
             except Exception as exc:
                 self.send_json({"ok": False, "error": str(exc)}, HTTPStatus.INTERNAL_SERVER_ERROR)
+        elif effective_path == "/api/egress_restart":
+            # 重启指定出口的子进程（崩溃/离线后一键自救）。配置是单一事实来源，
+            # sync() 会保留存活进程、自动拉起已死的子进程，资源编号保持稳定。
+            try:
+                payload = self.read_json_body() or {}
+                slot_id = str(payload.get("slot_id") or "").strip()
+                ui_cfg = load_ui_config()
+                if slot_id and slot_id not in ("", "__default__"):
+                    if not any(str(s.get("slot_id")) == slot_id for s in (ui_cfg.get("slots") or [])):
+                        self.send_json({"ok": False, "error": "未找到该出口"}); return
+                try:
+                    _ensure_egress_orch(ui_cfg)
+                    if EGRESS_ORCH is not None:
+                        EGRESS_ORCH.sync(ui_cfg)
+                except Exception as exc:
+                    log_to_json("ERROR", "Egress", f"重启出口失败: {exc}")
+                    self.send_json({"ok": False, "error": f"重启失败: {exc}"}); return
+                # 稍等子进程拉起，再返回最新状态
+                time.sleep(1.0)
+                self.send_json({"ok": True, "egress": aggregate_egress_status(),
+                                "message": "已尝试重启出口，稍候将在状态中反映。"})
+            except Exception as exc:
+                self.send_json({"ok": False, "error": str(exc)}, HTTPStatus.INTERNAL_SERVER_ERROR)
         elif effective_path == "/api/egress_routing_config":
             # 返回某个出口的路由配置（用于主页/出站管理页按选中出口过滤节点列表）
             try:
@@ -3009,6 +3032,13 @@ def aggregate_egress_status() -> list[dict[str, Any]]:
             "alive": _quick_proxy_listen(port),
         }
         rp = orch_map.get(slot_id)
+        # 子进程日志路径（崩溃排查用）+ 崩溃标志（编排器曾拉起但进程已死）
+        if rp is not None:
+            entry["log_path"] = os.path.join(str(rp.data_dir), "region.log")
+            entry["crashed"] = (not rp.is_alive())
+        else:
+            entry["log_path"] = os.path.join(str(DATA_DIR), f"slot_{slot_id}", "region.log")
+            entry["crashed"] = False
         if rp is not None:
             try:
                 with urllib.request.urlopen(

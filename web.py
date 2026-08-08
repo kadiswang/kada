@@ -1733,6 +1733,7 @@ INDEX_HTML = r"""<!doctype html>
               <option value="__default__">默认出口（7928）</option>
             </select>
             <p class="form-hint" style="font-size: 11px; color: var(--text-muted); margin-top: 6px; line-height: 1.4;">下方"上游代理"为全局（所有出口共用节点池）；路由/国家/IP类型/健康度逐出口独立保存。</p>
+            <div id="net_egress_status" style="display:none; margin-top:10px; padding:10px 12px; border-radius:8px; font-size:12px; line-height:1.5;"></div>
           </div>
           <div class="form-group" style="margin-bottom: 16px; display:none;">
             <label class="form-label" for="net_proxy_port">HTTP/SOCKS5 代理出站端口</label>
@@ -4117,7 +4118,7 @@ function populateEgressDropdown() {
   sel.innerHTML = netEgressList.map(function(e) {
     const label = e.is_default
       ? "默认出口（" + (e.proxy_port || 7928) + "）"
-      : (e.name + "（端口 " + e.proxy_port + "）");
+      : (e.name + "（端口 " + e.proxy_port + "）") + (e.alive === false ? "（离线）" : "");
     return "<option value='" + e.slot_id + "'>" + label + "</option>";
   }).join("");
   if (!sel.value) sel.value = "__default__";
@@ -4167,6 +4168,65 @@ function setNetEgress() {
 
   // 端口（仅展示，不可改）
   $("net_proxy_port").value = e.proxy_port || 7928;
+
+  // 子出口运行状态提示：在线/离线/崩溃 + 日志路径 + 重启按钮
+  const st = $("net_egress_status");
+  if (!st) return;
+  if (e.is_default) {
+    st.style.display = "none";
+    st.innerHTML = "";
+    return;
+  }
+  st.style.display = "block";
+  const alive = e.alive !== false;
+  const crashed = !!e.crashed;
+  const logPath = e.log_path || "";
+  if (alive) {
+    st.style.background = "rgba(16,185,129,0.1)";
+    st.style.border = "1px solid rgba(16,185,129,0.25)";
+    st.style.color = "var(--success)";
+    st.innerHTML = "● 该出口子进程运行中（端口 " + (e.proxy_port || "?") + "）。";
+  } else if (crashed) {
+    st.style.background = "rgba(244,63,94,0.1)";
+    st.style.border = "1px solid rgba(244,63,94,0.25)";
+    st.style.color = "var(--danger)";
+    st.innerHTML = "⚠ 该出口子进程已崩溃（配置已保留）。" +
+      (logPath ? "<br>日志：" + esc(logPath) : "") +
+      "<br><a href=\"javascript:void(0)\" onclick=\"restartEgress('" + escAttr(e.slot_id) + "')\" style=\"color:var(--primary);font-weight:600;\">点此重启该出口</a>";
+  } else {
+    st.style.background = "rgba(245,158,11,0.1)";
+    st.style.border = "1px solid rgba(245,158,11,0.25)";
+    st.style.color = "#b45309";
+    st.innerHTML = "○ 该出口子进程尚未运行（配置已保留，稍候将自动拉起）。" +
+      (logPath ? "<br>日志：" + esc(logPath) : "") +
+      "<br><a href=\"javascript:void(0)\" onclick=\"restartEgress('" + escAttr(e.slot_id) + "')\" style=\"color:var(--primary);font-weight:600;\">点此立即重启</a>";
+  }
+}
+
+async function restartEgress(slotId) {
+  const st = $("net_egress_status");
+  if (st) { st.innerHTML = "正在重启该出口…"; }
+  try {
+    const data = await fetchWithCsrf("./api/egress_restart", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ slot_id: slotId }),
+    });
+    if (data && data.ok) {
+      if (st) { st.innerHTML = "✓ 已触发重启，稍候刷新将反映最新状态。"; }
+      // 重新拉取状态并刷新下拉与提示
+      try {
+        const s = await fetchWithCsrf("./api/egress_status_all");
+        netEgressList = (s.egress || []);
+        populateEgressDropdown();
+        setNetEgress();
+      } catch (e2) { console.error(e2); }
+    } else if (st) {
+      st.innerHTML = "重启失败：" + ((data && data.error) || "未知错误");
+    }
+  } catch (err) {
+    if (st) st.innerHTML = "重启请求失败：" + (err && err.message || err);
+  }
 }
 
 function closeNetworkModal() {

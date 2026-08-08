@@ -135,6 +135,10 @@ class TestAggregateEgress(unittest.TestCase):
         self.assertEqual(child["name"], "日本出口")
         self.assertTrue(child["alive"])
         self.assertEqual(child["routing_mode"], "auto")
+        # 子进程状态诊断字段必须存在（崩溃排查/一键重启用）
+        self.assertIn("log_path", child)
+        self.assertIn("crashed", child)
+        self.assertFalse(child["crashed"])
 
     def test_aggregate_lists_configured_egress_even_without_orchestrator(self):
         """回归保护：编排器未启动时，已配置的出口也必须出现在列表里。
