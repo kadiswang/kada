@@ -1410,16 +1410,30 @@ def maintain_valid_nodes(force: bool = False) -> str:
                                 if removed > 0:
                                     print(f"[节点过滤] 已清理 {removed} 个非家宽/移动节点，保留 {len(filtered)} 个节点", flush=True)
                                     log_to_json("INFO", "Main", f"节点过滤: 清理 {removed} 个非家宽/移动节点，保留 {len(filtered)} 个")
-                        return message
+                        if not force:
+                            return message
+                        # force=True（手动一键检测）：快速首连成功后不提前收工，
+                        # 继续补测下方尚处于"未检测"状态的节点，避免大量节点一直不测。
                     is_connecting = True
 
         # Test remaining non-active nodes from the list
         with lock:
             current_nodes = read_nodes()
-            to_test = [
-                n for n in current_nodes
-                if not n.get("active") and n.get("id") not in initial_tested_ids
-            ]
+            # force=True（手动一键检测）：只补测"未检测"节点（probe_status 缺失/unknown），
+            # 已可用/已不可用的节点不再重复拨号测速，避免正常节点被反复打扰。
+            # force=False（后台周期检测）：维持原行为，对全部非活动节点做连通性复核。
+            if force:
+                to_test = [
+                    n for n in current_nodes
+                    if not n.get("active")
+                    and n.get("id") not in initial_tested_ids
+                    and (n.get("probe_status") in (None, "", "unknown"))
+                ]
+            else:
+                to_test = [
+                    n for n in current_nodes
+                    if not n.get("active") and n.get("id") not in initial_tested_ids
+                ]
             to_test_ids = [n["id"] for n in to_test]
             
         msg = f"开始对列表中所有候选节点进行周期连通性与延迟测试，待检测节点共 {len(to_test_ids)} 个"
