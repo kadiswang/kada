@@ -1295,8 +1295,14 @@ def maintain_valid_nodes(force: bool = False) -> str:
         with lock:
             current_nodes = read_nodes()
             current_ids = {str(n.get("id")) for n in current_nodes if n.get("id")}
-            # 只保留可用的旧节点，不可用的删除
-            kept_nodes = [n for n in current_nodes if n.get("probe_status") == "available" or n.get("active")]
+            # 默认删除策略（用户拍板）：正在连接的(active)与可用的(available)保留，
+            # 仅删除"上次测速连不通(unavailable)"的旧节点；
+            # 未测出结论(unknown/not_checked/空)的旧节点保留，留待下一轮检测再判定，
+            # 不再因为"没结论"就被当垃圾清掉。
+            kept_nodes = [
+                n for n in current_nodes
+                if n.get("active") or n.get("probe_status") != "unavailable"
+            ]
             current_by_id = {
                 str(n.get("id")): n
                 for n in kept_nodes
