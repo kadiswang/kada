@@ -4278,8 +4278,11 @@ function setNetEgress() {
 }
 
 async function restartEgress(slotId) {
-  const st = $("net_egress_status");
-  if (st) { st.innerHTML = "正在重启该出口…"; }
+  if (!slotId || slotId === "__default__") {
+    showToast("无法重启：出口 ID 为空", "error");
+    return;
+  }
+  showToast("正在重启出口 " + slotId + "…", "info");
   try {
     const data = await fetchWithCsrf("./api/egress_restart", {
       method: "POST",
@@ -4287,19 +4290,30 @@ async function restartEgress(slotId) {
       body: JSON.stringify({ slot_id: slotId }),
     });
     if (data && data.ok) {
-      if (st) { st.innerHTML = "✓ 已触发重启，稍候刷新将反映最新状态。"; }
-      // 重新拉取状态并刷新下拉与提示
+      showToast("✓ 出口 " + slotId + " 已触发重启，稍候刷新状态", "success");
+      // 重新拉取状态并刷新卡片、下拉框与提示
       try {
         const s = await fetchWithCsrf("./api/egress_status_all");
         netEgressList = (s.egress || []);
         populateEgressDropdown();
         setNetEgress();
       } catch (e2) { console.error(e2); }
-    } else if (st) {
-      st.innerHTML = "重启失败：" + ((data && data.error) || "未知错误");
+      // 出站管理页：刷新卡片列表
+      try {
+        if (typeof loadEgress === "function") { await loadEgress(); }
+      } catch (e3) { console.error(e3); }
+    } else {
+      const msg = (data && data.error) || "未知错误";
+      showToast("重启出口 " + slotId + " 失败：" + msg, "error");
+      // 同步失败后也把后端返回的错误写到弹窗状态区（兼容旧入口）
+      const st = $("net_egress_status");
+      if (st) { st.innerHTML = "<span style='color:#dc2626'>重启失败：" + esc(msg) + "</span>"; }
     }
   } catch (err) {
-    if (st) st.innerHTML = "重启请求失败：" + (err && err.message || err);
+    const msg = (err && err.message) ? err.message : String(err);
+    showToast("重启请求失败：" + msg, "error");
+    const st = $("net_egress_status");
+    if (st) { st.innerHTML = "<span style='color:#dc2626'>重启请求失败：" + esc(msg) + "</span>"; }
   }
 }
 
