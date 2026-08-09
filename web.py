@@ -436,6 +436,9 @@ LOGIN_HTML = r"""<!DOCTYPE html>
       }
     }
   </script>
+
+  <!-- 悬停风控情报卡片（由 showRiskIntel / hideRiskIntel 控制显隐） -->
+  <div id="risk_intel_popover" class="risk-popover" style="display:none;"></div>
 </body>
 </html>
 """
@@ -1385,6 +1388,30 @@ INDEX_HTML = r"""<!doctype html>
     .health-poor { background: rgba(239, 68, 68, 0.15); color: #dc2626; }
     .health-critical { background: rgba(127, 29, 29, 0.15); color: #991b1b; }
     .health-unknown { background: rgba(148, 163, 184, 0.18); color: #64748b; }
+
+    /* 风控分列 + 悬停风控情报卡片 */
+    .risk-cell { font-weight: 600; font-size: 12px; padding: 2px 6px; border-radius: 4px; display: inline-block; cursor: help; }
+    .risk-safe { background: rgba(16, 185, 129, 0.15); color: #059669; }
+    .risk-warn { background: rgba(245, 158, 11, 0.15); color: #d97706; }
+    .risk-bad  { background: rgba(239, 68, 68, 0.15); color: #dc2626; }
+    .risk-unknown { background: rgba(148, 163, 184, 0.18); color: #64748b; }
+    .risk-popover {
+      position: fixed; z-index: 9999; width: 286px;
+      background: var(--surface, #fff); border: 1px solid var(--border-color, #e2e8f0);
+      border-radius: 10px; box-shadow: 0 10px 30px rgba(0,0,0,0.18);
+      padding: 14px 16px; font-size: 12px; color: var(--text-primary, #1e293b);
+      pointer-events: none;
+    }
+    .risk-popover h4 { margin: 0 0 10px; font-size: 13px; display: flex; align-items: center; gap: 6px; }
+    .ri-row { display: flex; justify-content: space-between; gap: 10px; padding: 5px 0; border-bottom: 1px dashed var(--border-color, #e2e8f0); }
+    .ri-row:last-child { border-bottom: none; }
+    .ri-k { color: var(--text-secondary, #64748b); white-space: nowrap; }
+    .ri-v { font-weight: 600; text-align: right; }
+    .ri-v.ri-muted { color: var(--text-muted, #94a3b8); font-weight: 400; }
+    .ri-ok { color: #059669; }
+    .ri-danger { color: #dc2626; }
+    .ri-note { margin-top: 10px; font-size: 11px; color: var(--text-muted, #94a3b8); line-height: 1.5; }
+
     @media (max-width: 576px) { .vps-links { grid-template-columns: 1fr; } }
     @keyframes spin { from { transform: rotate(0deg); } to { transform: rotate(360deg); } }
     @keyframes modalFadeIn { from { transform: scale(0.97); opacity: 0; } to { transform: scale(1); opacity: 1; } }
@@ -1639,6 +1666,7 @@ INDEX_HTML = r"""<!doctype html>
             <th style="width: 80px;">IP 类型</th>
             <th style="width: 80px;">延迟</th>
             <th style="width: 80px;">健康度</th>
+            <th style="width: 80px;">风控分</th>
             <th style="width: 160px;">操作</th>
           </tr>
         </thead>
@@ -2087,6 +2115,7 @@ INDEX_HTML = r"""<!doctype html>
                 <th style="width: 80px;">IP 类型</th>
                 <th style="width: 80px;">延迟</th>
                 <th style="width: 80px;">健康度</th>
+                <th style="width: 80px;">风控分</th>
                 <th style="width: 160px;">操作</th>
               </tr>
             </thead>
@@ -2211,6 +2240,86 @@ function healthCell(n) {
     : '';
   return '<span class="health-badge ' + getHealthClass(s) + '" title="' + escAttr(healthTitle(n)) + '">'
     + s + '</span>' + flag + crowd;
+}
+
+// 风控分（proxycheck.io 风险分）：数值越高越危险（0 最安全，100 最危险）。
+// 颜色与综合健康度相反：低风险绿、中风险黄、高风险红。
+function getRiskClass(v) {
+  if (v <= 30) return "risk-safe";
+  if (v <= 60) return "risk-warn";
+  return "risk-bad";
+}
+
+// 节点列表的"风控分"列单元格：未查询显示"—"，悬停弹"风控情报"卡片。
+function riskCell(n) {
+  if (!n) return '<span class="risk-cell risk-unknown">—</span>';
+  var risk = parseInt(n.risk_score);
+  if (isNaN(risk)) {
+    return '<span class="risk-cell risk-unknown" onmouseenter="showRiskIntel(\'' + esc(n.id) + '\', event)" onmouseleave="hideRiskIntel()">—</span>';
+  }
+  return '<span class="risk-cell ' + getRiskClass(risk) + '" onmouseenter="showRiskIntel(\'' + esc(n.id) + '\', event)" onmouseleave="hideRiskIntel()">' + risk + '</span>';
+}
+
+// 风控情报卡片完整内容（悬停弹出）。
+function riskIntelCardHtml(n) {
+  if (!n) return "";
+  var risk = parseInt(n.risk_score);
+  var hasRisk = !isNaN(risk);
+  var body = "";
+  if (hasRisk) {
+    body += '<div class="ri-row"><span class="ri-k">风险分 (risk)</span><span class="ri-v ' + getRiskClass(risk) + '">' + risk + ' / 100</span></div>';
+  } else {
+    body += '<div class="ri-row"><span class="ri-k">风险分 (risk)</span><span class="ri-v ri-muted">未查询</span></div>';
+  }
+  if (n.is_flagged_proxy) {
+    body += '<div class="ri-row"><span class="ri-k">被风控标记</span><span class="ri-v ri-danger">⚠ 是</span></div>';
+    body += '<div class="ri-row"><span class="ri-k">标记类型</span><span class="ri-v">' + esc(n.flagged_type || "代理") + '</span></div>';
+  } else {
+    body += '<div class="ri-row"><span class="ri-k">被风控标记</span><span class="ri-v ri-ok">否</span></div>';
+  }
+  var dev = parseInt(n.subnet_devices);
+  if (!isNaN(dev)) {
+    body += '<div class="ri-row"><span class="ri-k">同网段设备</span><span class="ri-v">' + dev + ' 台' + (dev >= 100 ? '（拥挤）' : '') + '</span></div>';
+  }
+  if (n.rdns) {
+    body += '<div class="ri-row"><span class="ri-k">反查域名</span><span class="ri-v" style="font-weight:400;">' + esc(n.rdns) + '</span></div>';
+  }
+  body += '<div class="ri-row"><span class="ri-k">综合健康度</span><span class="ri-v">' + getHealthScore(n) + ' / 100</span></div>';
+  var note = hasRisk
+    ? "proxycheck.io 风险分：数值越高越危险（0 最安全，100 最危险）。仅对拨号可用的节点评分，连不通的节点不查询以节省每日额度。"
+    : "该节点尚未查询 proxycheck.io 风控情报（仅对拨号可用的节点评分，以节省每日额度）。启用风控情报后，可用节点会在检测时自动补评。";
+  return '<h4>🛡️ 风控情报（proxycheck.io）</h4>' + body + '<div class="ri-note">' + note + '</div>';
+}
+
+function findNodeById(id) {
+  for (var i = 0; i < nodes.length; i++) {
+    if (nodes[i] && nodes[i].id === id) return nodes[i];
+  }
+  return null;
+}
+
+function showRiskIntel(nodeId, evt) {
+  var n = findNodeById(nodeId);
+  if (!n) return;
+  var pop = document.getElementById("risk_intel_popover");
+  if (!pop) return;
+  pop.innerHTML = riskIntelCardHtml(n);
+  pop.style.display = "block";
+  var r = evt.currentTarget.getBoundingClientRect();
+  var pw = pop.offsetWidth || 286;
+  var ph = pop.offsetHeight || 200;
+  var left = r.right + 8;
+  if (left + pw > window.innerWidth - 8) left = r.left - pw - 8;
+  if (left < 8) left = 8;
+  var top = r.top;
+  if (top + ph > window.innerHeight - 8) top = Math.max(8, window.innerHeight - ph - 8);
+  pop.style.left = left + "px";
+  pop.style.top = top + "px";
+}
+
+function hideRiskIntel() {
+  var pop = document.getElementById("risk_intel_popover");
+  if (pop) pop.style.display = "none";
 }
 
 function getHealthClass(score) {
@@ -2548,7 +2657,7 @@ function render(){
 
   // Render table rows
   if (currentPageNodes.length === 0) {
-    $("rows").innerHTML = `<tr style="display: table-row !important;"><td colspan="8" style="display: table-cell !important; text-align: center; color: var(--text-secondary); padding: 40px 0;">未找到符合过滤条件的备选节点。</td></tr>`;
+    $("rows").innerHTML = `<tr style="display: table-row !important;"><td colspan="9" style="display: table-cell !important; text-align: center; color: var(--text-secondary); padding: 40px 0;">未找到符合过滤条件的备选节点。</td></tr>`;
   } else {
     $("rows").innerHTML=currentPageNodes.map(n=>{
       if (!n) return '';
@@ -2588,6 +2697,9 @@ function render(){
         <td style="white-space: nowrap; display: table-cell !important;">${latencyText}</td>
         <td style="white-space: nowrap; display: table-cell !important;">
           ${healthCell(n)}
+        </td>
+        <td style="white-space: nowrap; display: table-cell !important; text-align: center;">
+          ${riskCell(n)}
         </td>
         <td style="display: table-cell !important;">
           <div class="table-actions">
@@ -2660,7 +2772,7 @@ function renderOverviewNodes(activeNode) {
   label.textContent = parts.join(" + ") + " (" + filtered.length + " 个节点)";
 
   if (filtered.length === 0) {
-    container.innerHTML = '<tr><td colspan="7" style="text-align:center;color:var(--text-secondary);padding:30px 0;">暂无符合条件的节点</td></tr>';
+    container.innerHTML = '<tr><td colspan="8" style="text-align:center;color:var(--text-secondary);padding:30px 0;">暂无符合条件的节点</td></tr>';
     return;
   }
 
@@ -2683,6 +2795,7 @@ function renderOverviewNodes(activeNode) {
       '<td style="white-space:nowrap;display:table-cell!important;">' + esc(translateIpType(n.ip_type)) + '</td>' +
       '<td style="white-space:nowrap;display:table-cell!important;">' + latencyText + '</td>' +
       '<td style="white-space:nowrap;display:table-cell!important;">' + healthCell(n) + '</td>' +
+      '<td style="white-space:nowrap;display:table-cell!important;text-align:center;">' + riskCell(n) + '</td>' +
       '<td style="display:table-cell!important;">' + connectBtn + '</td>' +
       '</tr>';
   }).join("");
@@ -3662,7 +3775,7 @@ async function renderEgressNodeList() {
   label.textContent = parts.join(" + ") + " (" + filtered.length + " 个节点)";
 
   if (filtered.length === 0) {
-    rows.innerHTML = '<tr><td colspan="7" style="text-align:center;color:var(--text-secondary);padding:30px 0;">' +
+    rows.innerHTML = '<tr><td colspan="8" style="text-align:center;color:var(--text-secondary);padding:30px 0;">' +
       '暂无符合条件的节点。<br>' +
       '<span style="font-size:12px;">可点击「更新节点」拉取更多，或到「代理设置」放宽筛选条件。</span></td></tr>';
     return;
@@ -3690,6 +3803,7 @@ async function renderEgressNodeList() {
       '<td style="white-space:nowrap;display:table-cell!important;">' + esc(translateIpType(n.ip_type)) + '</td>' +
       '<td style="white-space:nowrap;display:table-cell!important;">' + latencyText + '</td>' +
       '<td style="white-space:nowrap;display:table-cell!important;">' + healthCell(n) + '</td>' +
+      '<td style="white-space:nowrap;display:table-cell!important;text-align:center;">' + riskCell(n) + '</td>' +
       '<td style="display:table-cell!important;">' + connectBtn + '</td>' +
       '</tr>';
   }).join("");
