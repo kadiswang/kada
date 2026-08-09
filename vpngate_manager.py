@@ -1374,6 +1374,19 @@ def manual_detect_nodes() -> str:
                 if available_candidates:
                     auto_switch_node()
 
+        # 4.5) 删除策略与自动检测保持一致：重测后仍 unavailable 的旧节点淘汰，
+        #      active / available / 未测出结论的节点保留（用户要求"只删不可用"）。
+        with lock:
+            final_nodes = read_nodes()
+            kept_nodes = [
+                n for n in final_nodes
+                if n.get("active") or n.get("probe_status") != "unavailable"
+            ]
+            if len(kept_nodes) != len(final_nodes):
+                write_json(NODES_FILE, kept_nodes)
+                print(f"[一键检测] 已清理 {len(final_nodes) - len(kept_nodes)} 个不可用的旧节点", flush=True)
+                final_nodes = kept_nodes
+
         available = len([n for n in final_nodes if n.get("probe_status") == "available"])
         unavailable = len([n for n in final_nodes if n.get("probe_status") == "unavailable"])
         message = (
@@ -1591,10 +1604,9 @@ def maintain_valid_nodes(force: bool = False) -> str:
                                 ]
                                 print(f"[节点过滤] 按 IP 类型({_ip_type_filter})连接，节点池保留全部 {len(final_nodes)} 个，其中符合类型 {len(_typed)} 个（不删除节点）", flush=True)
                                 log_to_json("INFO", "Main", f"节点过滤: 按类型({_ip_type_filter})连接，节点池保留 {len(final_nodes)} 个不删除，符合类型 {len(_typed)} 个")
-                        if not force:
-                            return message
-                        # force=True（手动一键检测）：快速首连成功后不提前收工，
-                        # 继续补测下方尚处于"未检测"状态的节点，避免大量节点一直不测。
+                        # 快速首连只负责"先连上一个可用节点"让用户能立刻上网，
+                        # 连上后不提前收工——继续对全部剩余节点做连通性复核
+                        # （下方 to_test 已通过 initial_tested_ids 排除首连测过的节点）。
                     is_connecting = True
 
         # Test remaining non-active nodes from the list

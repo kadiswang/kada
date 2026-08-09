@@ -233,16 +233,18 @@ class TestManualDetectNodes(unittest.TestCase):
     def tearDown(self):
         shutil.rmtree(self.tmp_cfg, ignore_errors=True)
 
-    def _run(self, initial, candidates=None, connection_enabled=True):
+    def _run(self, initial, candidates=None, connection_enabled=True, fail_ids=None):
         store = _Store(initial)
         calls: list[list[str]] = []
+        fail_ids = set(fail_ids or [])
 
         def fake_test(ids):
             calls.append(list(ids))
             byid = {n["id"]: n for n in store.nodes}
             for i in ids:
                 if i in byid:
-                    byid[i]["probe_status"] = "available"
+                    # fail_ids 模拟"重测后仍连不通"，保持 unavailable；其余标为可用
+                    byid[i]["probe_status"] = "unavailable" if i in fail_ids else "available"
             return []
 
         cfg = {"connection_enabled": connection_enabled, "routing_mode": "auto", "routing_ip_type": "all"}
@@ -301,6 +303,22 @@ class TestManualDetectNodes(unittest.TestCase):
         self.assertIn("NEW", ids_in_pool)
         self.assertIn("NEW", tested)
         self.assertIn("OLD", tested)
+
+    def test_unavailable_old_nodes_deleted_after_recheck(self):
+        # 一键检测重测后仍连不通的 unavailable 旧节点应被删除（与自动检测策略一致：只删不可用）
+        initial = [
+            {"id": "AVAIL", "probe_status": "available", "remote_host": "1.1.1.1", "remote_port": 1194, "config_file": "a.ovpn", "config_text": "A"},
+            {"id": "ACTIVE", "active": True, "probe_status": "unknown", "remote_host": "1.1.1.7", "remote_port": 1194, "config_file": "ac.ovpn", "config_text": "AC"},
+            {"id": "N1", "probe_status": "not_checked", "remote_host": "1.1.1.2", "remote_port": 1194, "config_file": "n1.ovpn", "config_text": "N1"},
+            {"id": "FAIL", "probe_status": "unavailable", "remote_host": "1.1.1.6", "remote_port": 1194, "config_file": "f.ovpn", "config_text": "F"},
+        ]
+        nodes, calls, msg = self._run(initial, fail_ids={"FAIL"})
+        ids_in_pool = {n["id"] for n in nodes}
+        # FAIL 重测后仍不可用的旧节点被删除
+        self.assertNotIn("FAIL", ids_in_pool)
+        # 可用 / 活动 / 未测出结论的节点保留
+        for nid in ("AVAIL", "ACTIVE", "N1"):
+            self.assertIn(nid, ids_in_pool)
 
 
 if __name__ == "__main__":
