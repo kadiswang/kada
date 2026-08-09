@@ -1395,7 +1395,7 @@ INDEX_HTML = r"""<!doctype html>
     .risk-warn { background: rgba(245, 158, 11, 0.15); color: #d97706; }
     .risk-bad  { background: rgba(239, 68, 68, 0.15); color: #dc2626; }
     .risk-unknown { background: rgba(148, 163, 184, 0.18); color: #64748b; }
-    /* 健康度单元格内的"风控异常"标记（独立于健康度分数） */
+    /* 风控分单元格内的"风控异常"标记（属于风控分系统，不在健康度列） */
     .risk-anomaly-badge {
       margin-left: 6px; padding: 1px 7px; border-radius: 999px;
       font-size: 11px; font-weight: 700; white-space: nowrap;
@@ -2233,22 +2233,15 @@ function hasIpIntel(n) {
   return !!(n.ip_type || n.owner || n.as_name || n.location);
 }
 
-// 悬停说明：健康度(信誉) 与 风控分(proxycheck) 是两套独立指标，分开讲清楚。
+// 悬停说明：健康度(信誉) 只看节点本身质量，风控情报是另一套系统，指到风控分列。
 function healthTitle(n) {
   if (!n) return "";
   var lines = [];
   var trust = parseInt(n.trust_score);
   if (!isNaN(trust)) lines.push("健康度（信誉分） " + trust + "/100，越高越好");
-  lines.push("健康度与风控分是两套独立指标：健康度看节点本身质量，风控分看是否被风控拉黑");
-  var risk = parseInt(n.risk_score);
-  if (!isNaN(risk)) {
-    lines.push("风控风险分 " + risk + "/100（越高越危险，越低越安全）");
-    lines.push(n.is_flagged_proxy
-      ? "⚠ 已被风控库标记为" + (n.flagged_type || "代理") + "，访问部分网站可能被拦"
-      : "未被风控库标记");
-  } else {
-    lines.push("风控风险分：未查询（仅对拨号可用的节点评分，以节省每日额度）");
-  }
+  else lines.push("健康度：尚未查询 IP 情报");
+  lines.push("健康度只看节点本身质量（net.coffee 信誉分）");
+  lines.push("风控情报（风险分 / 是否被风控拉黑）见右侧『风控分』列");
   var dev = parseInt(n.subnet_devices);
   if (!isNaN(dev)) lines.push("同网段约 " + dev + " 台设备在用" + (dev >= 100 ? "（较拥挤）" : ""));
   if (n.rdns) lines.push("反查域名 " + n.rdns);
@@ -2261,15 +2254,12 @@ function healthCell(n) {
   if (!s && !hasIpIntel(n)) {
     return '<span class="health-badge health-unknown" title="尚未查询 IP 情报">—</span>';
   }
-  var anomalyBadge = isRiskAnomaly(n)
-    ? '<span class="risk-anomaly-badge" title="' + escAttr(riskAnomalyTitle(n)) + '">⚠ 风控异常</span>'
-    : '';
   var dev = parseInt(n && n.subnet_devices);
   var crowd = (!isNaN(dev) && dev >= 100)
     ? '<span title="同网段约 ' + dev + ' 台设备共用，可能较慢" style="margin-left:4px;color:var(--text-muted);font-size:11px;">' + dev + '人</span>'
     : '';
   return '<span class="health-badge ' + getHealthClass(s) + '" title="' + escAttr(healthTitle(n)) + '">'
-    + s + '</span>' + anomalyBadge + crowd;
+    + s + '</span>' + crowd;
 }
 
 // 风控分（proxycheck.io 风险分）：数值越高越危险（0 最安全，100 最危险）。
@@ -2287,7 +2277,10 @@ function riskCell(n) {
   if (isNaN(risk)) {
     return '<span class="risk-cell risk-unknown" onmouseenter="showRiskIntel(\'' + esc(n.id) + '\', event)" onmouseleave="hideRiskIntel()">—</span>';
   }
-  return '<span class="risk-cell ' + getRiskClass(risk) + '" onmouseenter="showRiskIntel(\'' + esc(n.id) + '\', event)" onmouseleave="hideRiskIntel()">' + risk + '</span>';
+  var anomalyBadge = isRiskAnomaly(n)
+    ? '<span class="risk-anomaly-badge" title="' + escAttr(riskAnomalyTitle(n)) + '">⚠ 风控异常</span>'
+    : '';
+  return '<span class="risk-cell ' + getRiskClass(risk) + '" onmouseenter="showRiskIntel(\'' + esc(n.id) + '\', event)" onmouseleave="hideRiskIntel()">' + risk + '</span>' + anomalyBadge;
 }
 
 // 风控情报卡片完整内容（悬停弹出）。

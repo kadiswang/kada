@@ -55,15 +55,24 @@ class TestRiskIntelUI(unittest.TestCase):
             self.assertIn(cls, self.html)
 
     def test_health_and_risk_are_separate_systems(self):
-        # 健康度(信誉分) 与 风控分(proxycheck) 是两套独立指标：
-        # 1) healthCell 在健康度旁显示"风控异常"标记（风控异常独立于健康分数）
-        # 2) 存在 isRiskAnomaly 判定函数，且阈值独立
+        # 健康度(信誉分) 与 风控分(proxycheck) 是两套独立指标，
+        # 且"风控异常"标记必须归位到风控分列，不能混进健康度列。
         self.assertIn("function healthCell(n)", self.html)
+        self.assertIn("function riskCell(n)", self.html)
         self.assertIn("function isRiskAnomaly(n)", self.html)
-        self.assertIn("风控异常", self.html)
         self.assertIn("risk-anomaly-badge", self.html)
         self.assertIn("RISK_ANOMALY_THRESHOLD", self.html)
-        # 健康度判定只用信誉分，不再把风控分折算合并（compute_health_score 单参）
+        # 健康度列(healthCell) 函数体内不得出现风控异常标记——避免两套系统混淆
+        h_start = self.html.find("function healthCell(n)")
+        h_end = self.html.find("function riskCell(n)")
+        health_block = self.html[h_start:h_end]
+        self.assertNotIn("risk-anomaly-badge", health_block,
+                         "风控异常标记被误放在健康度列，应只在风控分列(riskCell)")
+        # 风控分列(riskCell) 函数体内必须包含风控异常标记
+        risk_block = self.html[h_end: h_end + 1400]
+        self.assertIn("risk-anomaly-badge", risk_block,
+                      "风控分列(riskCell) 应显示风控异常标记")
+        # 健康度只用信誉分（net.coffee），与风控分解耦
         self.assertIn("net.coffee 信誉分", self.html)
         self.assertIn("两套相互独立的指标", self.html)
 
