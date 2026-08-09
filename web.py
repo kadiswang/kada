@@ -1395,6 +1395,13 @@ INDEX_HTML = r"""<!doctype html>
     .risk-warn { background: rgba(245, 158, 11, 0.15); color: #d97706; }
     .risk-bad  { background: rgba(239, 68, 68, 0.15); color: #dc2626; }
     .risk-unknown { background: rgba(148, 163, 184, 0.18); color: #64748b; }
+    /* 健康度单元格内的"风控异常"标记（独立于健康度分数） */
+    .risk-anomaly-badge {
+      margin-left: 6px; padding: 1px 7px; border-radius: 999px;
+      font-size: 11px; font-weight: 700; white-space: nowrap;
+      background: rgba(239, 68, 68, 0.16); color: #dc2626;
+      border: 1px solid rgba(239, 68, 68, 0.35);
+    }
     .risk-popover {
       position: fixed; z-index: 9999; width: 286px;
       background: var(--surface, #fff); border: 1px solid var(--border-color, #e2e8f0);
@@ -2185,10 +2192,10 @@ const base=p=>(p||"").split(/[\\/]/).pop();
 function time(ts){return ts?new Date(ts*1000).toLocaleString():"从未"}
 function speed(v){return v?`${(v*8/1000/1000).toFixed(1)} Mbps`:"-"}
 
-// 综合健康度（0-100，统一"越高越好"）。
-// 两个情报源方向相反：net.coffee 的 trust_score 高=可信，
-// proxycheck 的 risk 高=危险。后端已把 risk 翻转成 100-risk 并与信誉分
-// 取更保守的一方，结果存在 health_score。这里优先用它，旧数据回退 trust_score。
+// 健康度（0-100，越高越好）= net.coffee 信誉分（trust_score）。
+// 注意：健康度与"风控分(proxycheck risk_score)"是两套相互独立的指标，刻意解耦——
+// 健康度只反映节点本身的信誉/质量，风控分单独在"风控分"列展示。
+// 这里优先用 health_score，旧数据回退 trust_score。
 function getHealthScore(n) {
   if (!n) return 0;
   var v = (n.health_score === null || n.health_score === undefined || n.health_score === "")
@@ -2198,6 +2205,27 @@ function getHealthScore(n) {
   return Math.max(0, Math.min(100, s));
 }
 
+// 风控分异常阈值：proxycheck 风险分 >= 此值视为高风险（0 最安全 / 100 最危险）。
+const RISK_ANOMALY_THRESHOLD = 70;
+
+// 风控异常判定（独立于健康度）：风险分过高，或已被风控库标记为代理。
+function isRiskAnomaly(n) {
+  if (!n) return false;
+  var risk = parseInt(n.risk_score);
+  if (!isNaN(risk) && risk >= RISK_ANOMALY_THRESHOLD) return true;
+  if (n.is_flagged_proxy) return true;
+  return false;
+}
+
+function riskAnomalyTitle(n) {
+  if (!n) return "";
+  var risk = parseInt(n.risk_score);
+  var parts = ["⚠ 风控异常：该节点风控情报异常，访问部分网站可能被拦"];
+  if (!isNaN(risk)) parts.push("风险分 " + risk + "/100（越高越危险）");
+  if (n.is_flagged_proxy) parts.push("已被风控库标记为" + (n.flagged_type || "代理"));
+  return parts.join("；");
+}
+
 // 从未查过 IP 情报的节点，健康度应显示"—"而不是 0，
 // 否则"没测过"和"确实很差"在界面上长得一模一样。
 function hasIpIntel(n) {
@@ -2205,24 +2233,26 @@ function hasIpIntel(n) {
   return !!(n.ip_type || n.owner || n.as_name || n.location);
 }
 
-// 悬停说明：把两个方向相反的原始分摊开讲清楚，避免用户对着两个数字犯迷糊
+// 悬停说明：健康度(信誉) 与 风控分(proxycheck) 是两套独立指标，分开讲清楚。
 function healthTitle(n) {
   if (!n) return "";
   var lines = [];
   var trust = parseInt(n.trust_score);
-  if (!isNaN(trust)) lines.push("信誉分 " + trust + "/100（越高越好）");
+  if (!isNaN(trust)) lines.push("健康度（信誉分） " + trust + "/100，越高越好");
+  lines.push("健康度与风控分是两套独立指标：健康度看节点本身质量，风控分看是否被风控拉黑");
   var risk = parseInt(n.risk_score);
   if (!isNaN(risk)) {
-    lines.push("风控风险分 " + risk + "/100（越低越好，已折算为 " + (100 - risk) + "）");
+    lines.push("风控风险分 " + risk + "/100（越高越危险，越低越安全）");
     lines.push(n.is_flagged_proxy
       ? "⚠ 已被风控库标记为" + (n.flagged_type || "代理") + "，访问部分网站可能被拦"
       : "未被风控库标记");
+  } else {
+    lines.push("风控风险分：未查询（仅对拨号可用的节点评分，以节省每日额度）");
   }
   var dev = parseInt(n.subnet_devices);
   if (!isNaN(dev)) lines.push("同网段约 " + dev + " 台设备在用" + (dev >= 100 ? "（较拥挤）" : ""));
   if (n.rdns) lines.push("反查域名 " + n.rdns);
   if (!lines.length) return "尚未查询 IP 情报";
-  lines.push("综合取两者中更保守的一项");
   return lines.join("\n");
 }
 
@@ -2231,15 +2261,15 @@ function healthCell(n) {
   if (!s && !hasIpIntel(n)) {
     return '<span class="health-badge health-unknown" title="尚未查询 IP 情报">—</span>';
   }
-  var flag = (n && n.is_flagged_proxy)
-    ? '<span title="已被风控库标记为代理" style="margin-left:4px;color:var(--danger);font-size:11px;">⚠</span>'
+  var anomalyBadge = isRiskAnomaly(n)
+    ? '<span class="risk-anomaly-badge" title="' + escAttr(riskAnomalyTitle(n)) + '">⚠ 风控异常</span>'
     : '';
   var dev = parseInt(n && n.subnet_devices);
   var crowd = (!isNaN(dev) && dev >= 100)
     ? '<span title="同网段约 ' + dev + ' 台设备共用，可能较慢" style="margin-left:4px;color:var(--text-muted);font-size:11px;">' + dev + '人</span>'
     : '';
   return '<span class="health-badge ' + getHealthClass(s) + '" title="' + escAttr(healthTitle(n)) + '">'
-    + s + '</span>' + flag + crowd;
+    + s + '</span>' + anomalyBadge + crowd;
 }
 
 // 风控分（proxycheck.io 风险分）：数值越高越危险（0 最安全，100 最危险）。

@@ -54,6 +54,19 @@ class TestRiskIntelUI(unittest.TestCase):
         for cls in ("risk-safe", "risk-warn", "risk-bad", "risk-unknown"):
             self.assertIn(cls, self.html)
 
+    def test_health_and_risk_are_separate_systems(self):
+        # 健康度(信誉分) 与 风控分(proxycheck) 是两套独立指标：
+        # 1) healthCell 在健康度旁显示"风控异常"标记（风控异常独立于健康分数）
+        # 2) 存在 isRiskAnomaly 判定函数，且阈值独立
+        self.assertIn("function healthCell(n)", self.html)
+        self.assertIn("function isRiskAnomaly(n)", self.html)
+        self.assertIn("风控异常", self.html)
+        self.assertIn("risk-anomaly-badge", self.html)
+        self.assertIn("RISK_ANOMALY_THRESHOLD", self.html)
+        # 健康度判定只用信誉分，不再把风控分折算合并（compute_health_score 单参）
+        self.assertIn("net.coffee 信誉分", self.html)
+        self.assertIn("两套相互独立的指标", self.html)
+
 
 if __name__ == "__main__":
     unittest.main()

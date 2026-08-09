@@ -1239,6 +1239,47 @@ def backfill_unknown_ip_types(limit: int = IP_TYPE_BACKFILL_LIMIT) -> int:
         return 0
 
 
+def enrich_risk_for_nodes(nodes: list[dict[str, Any]]) -> int:
+    """对缺少风控分（risk_score 为空）的节点补查 proxycheck 并写回节点与缓存。
+
+    保证"一键检测"与"自动检测"都会填充风控分（独立于 IP 类型情报，两套系统解耦）。
+    只评传入节点、只补缺失项，省额度：已在用/已有风控分的节点不重复查询。
+    未配置 proxycheck（proxycheck_credential 返回 None）时直接跳过，不报错。
+    """
+    key = proxycheck_credential()
+    if key is None:
+        return 0
+    targets: list[str] = []
+    seen: set[str] = set()
+    for n in nodes:
+        ip = n.get("ip") or n.get("remote_host")
+        if ip and n.get("risk_score") in (None, ""):
+            if ip not in seen:
+                seen.add(ip)
+                targets.append(ip)
+    if not targets:
+        return 0
+    risk_map = vpn_utils.enrich_risk_only(targets, key)
+    if not risk_map:
+        return 0
+    with lock:
+        current = read_nodes()
+        by_ip: dict[str, dict[str, Any]] = {}
+        for n in current:
+            ip = n.get("ip") or n.get("remote_host")
+            if ip:
+                by_ip[ip] = n
+        for ip, extra in risk_map.items():
+            n = by_ip.get(ip)
+            if n:
+                for f in ("risk_score", "is_flagged_proxy", "flagged_type", "subnet_devices", "rdns"):
+                    if f in extra and extra[f] is not None:
+                        n[f] = extra[f]
+        write_json(NODES_FILE, current)
+    print(f"[风控分] 已为 {len(risk_map)} 个节点补查风控情报", flush=True)
+    return len(risk_map)
+
+
 def manual_detect_nodes() -> str:
     """独立的一键检测逻辑（与 maintain_valid_nodes 完全解耦，专门修'漏测'问题）。
 
@@ -1316,6 +1357,11 @@ def manual_detect_nodes() -> str:
 
         # 3) 富化可用节点的 IP 情报，逐步填满节点池信息
         backfill_unknown_ip_types()
+
+        # 3.5) 单独补风控分：保证"一键检测"也填充 proxycheck 风控分（与 IP 类型情报解耦）
+        with lock:
+            _avail_for_risk = [n for n in read_nodes() if n.get("probe_status") == "available"]
+        enrich_risk_for_nodes(_avail_for_risk)
 
         # 4) 若无活动连接且有可用节点，自动连一个（保持与之前一致的体验）
         with lock:
@@ -1620,6 +1666,9 @@ def maintain_valid_nodes(force: bool = False) -> str:
                 log_to_json("INFO", "Main", f"节点过滤: 按类型({_ip_type_filter})连接，节点池保留 {len(final_nodes)} 个不删除，符合类型 {len(_typed)} 个")
             # IP 类型过滤只影响连接选择，不再删除节点池；merged 保持全部节点。
             merged = final_nodes
+
+            # 单独补风控分：保证"自动检测"也填充 proxycheck 风控分（与 IP 类型情报解耦）
+            enrich_risk_for_nodes([n for n in merged if n.get("probe_status") == "available"])
 
         valid_nodes_count = len([n for n in merged if n.get("probe_status") == "available"])
         added_count = len([c for c in candidates if str(c.get("id")) not in current_ids])

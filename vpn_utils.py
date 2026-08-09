@@ -411,9 +411,7 @@ def apply_intel_to_node(node: dict[str, Any], entry: dict[str, Any]) -> None:
     """把一条情报结果整套写入节点，并算出方向统一的综合健康度。"""
     for field in INTEL_FIELDS:
         node[field] = entry.get(field, _INTEL_DEFAULTS.get(field, ""))
-    node["health_score"] = compute_health_score(
-        entry.get("trust_score"), entry.get("risk_score")
-    )
+    node["health_score"] = compute_health_score(entry.get("trust_score"))
 
 
 def enrich_ip_info(
@@ -646,38 +644,32 @@ def query_ip_api(ip: str) -> dict[str, Any] | None:
 # ---------------------------------------------------------------------------
 # proxycheck.io —— 风控黑名单维度（是否会被目标网站当代理拦截）
 #
-# 注意方向问题：net.coffee 的 trust_score 是"信誉分"，越高越好；
-# proxycheck 的 risk 是"风险分"，越高越危险。两者方向相反，
-# 因此这里统一在 compute_health_score() 里翻转成"越高越好"再合并，
-# 界面上只呈现一个方向一致的综合健康度，避免用户对着两个相反的数字犯迷糊。
+# 重要：健康度 与 风控分 是两套相互独立的指标，刻意解耦：
+#   * 健康度（health_score）= net.coffee 信誉分（trust_score），越高越好；
+#   * 风控分（risk_score）= proxycheck 风险分，越高越危险（0 最安全 / 100 最危险）。
+# 两者方向相反，但不再互相折算、不再合并——用户要求"两套系统隔离开"。
+# 健康度单元格里仅额外标一个"风控异常"提示（风险分过高或已被风控库标记），
+# 不把风控分折算进健康度。这样健康度看"节点本身质量"，风控分看"是否被风控拉黑"。
 # ---------------------------------------------------------------------------
 
 PROXYCHECK_BATCH_SIZE = 25
 
 
-def compute_health_score(trust_score: Any, risk_score: Any) -> int | None:
-    """把两个方向相反的第三方分数统一成"越高越好"的综合健康度（0-100）。
+def compute_health_score(trust_score: Any) -> int | None:
+    """健康度 = net.coffee 信誉分（trust_score），方向"越高越好"（0-100）。
 
-    - trust_score：net.coffee 信誉分，高 = 可信，直接采用。
-    - risk_score ：proxycheck 风险分，高 = 危险，翻转为 100 - risk。
-    - 两者都有时取更保守（更低）的一方：只要有任一情报源认为这个 IP 有问题，
-      就按有问题算，避免单一源漏判导致用户选到已被风控拉黑的节点。
-    - 都没有则返回 None，界面显示"—"而不是 0（"没查过"不等于"很差"）。
+    刻意与 proxycheck 风控分解耦：健康度只反映节点本身的信誉/质量，
+    不再把风控风险分折算并合并进去。风控分由 risk_score 字段独立承载，
+    在界面健康度单元格仅以"风控异常"提示呈现（见 web.py isRiskAnomaly）。
+
+    没有信誉分（未查过）时返回 None，界面显示"—"而不是 0（"没查过"≠"很差"）。
     """
-    parts: list[int] = []
-    if trust_score is not None and trust_score != "":
-        try:
-            parts.append(max(0, min(100, int(trust_score))))
-        except (TypeError, ValueError):
-            pass
-    if risk_score is not None and risk_score != "":
-        try:
-            parts.append(max(0, min(100, 100 - int(risk_score))))
-        except (TypeError, ValueError):
-            pass
-    if not parts:
+    if trust_score is None or trust_score == "":
         return None
-    return min(parts)
+    try:
+        return max(0, min(100, int(trust_score)))
+    except (TypeError, ValueError):
+        return None
 
 
 def query_proxycheck_batch(ips: list[str], api_key: str = "") -> dict[str, dict[str, Any]]:
@@ -760,6 +752,38 @@ def _ip_type_from_proxycheck(extra: dict[str, Any]) -> str | None:
         return "hosting"
     # Business / University / 国家名等无法确定是否住宅，保守返回 None
     return None
+
+
+def enrich_risk_only(ip_list: list[str], api_key: str = "") -> dict[str, dict[str, Any]]:
+    """只查 proxycheck 风控维度（不碰 net.coffee），合并写回 IP 缓存。
+
+    供"一键检测 / 自动检测"在拨号成功后单独补风控分，保证两条检测路径都会
+    填充风控分（与 IP 类型情报解耦）。仅对传入 IP 查询，失败不影响主流程。
+    结果合并进 IP 缓存（带 schema/cached_at），下次检测复用、不重复消耗额度。
+    """
+    targets = [ip for ip in ip_list if ip]
+    if not targets:
+        return {}
+    try:
+        risk_map = query_proxycheck_batch(targets, api_key)
+    except Exception as e:
+        print(f"[proxycheck] 风控分补查失败: {e}", flush=True)
+        return {}
+    if not risk_map:
+        return {}
+    with ip_cache_lock:
+        cache = load_ip_cache()
+        now = time.time()
+        for ip, extra in risk_map.items():
+            if ip in cache and isinstance(cache[ip], dict):
+                cache[ip].update(extra)
+            else:
+                entry = dict(extra)
+                entry["schema"] = IP_CACHE_SCHEMA
+                entry["cached_at"] = now
+                cache[ip] = entry
+        save_ip_cache(cache)
+    return risk_map
 
 
 def diagnose_api_failure(api_url: str = "https://www.vpngate.net/api/iphone/") -> tuple[int, str]:

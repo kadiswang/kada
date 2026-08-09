@@ -34,30 +34,24 @@ def _resp(payload: dict) -> _FakeResp:
 
 
 class TestHealthScoreDirection(unittest.TestCase):
-    """两个方向相反的分数必须统一成"越高越好"。"""
+    """健康度 = 信誉分（越高越好），与风控分(proxycheck)是两套独立指标，不互相折算。"""
 
-    def test_both_present_takes_conservative_lower(self):
-        # trust=95(好), risk=66(危险) -> 翻转后 34，取更保守的 34
-        self.assertEqual(vpn_utils.compute_health_score(95, 66), 34)
+    def test_uses_trust_score_only(self):
+        # 健康度只采用 net.coffee 信誉分，不再把风控分折算并合并
+        self.assertEqual(vpn_utils.compute_health_score(95), 95)
 
-    def test_only_trust(self):
-        self.assertEqual(vpn_utils.compute_health_score(95, None), 95)
+    def test_trust_ignores_risk(self):
+        # 即使风控分很高，健康度也只看信誉分（两套系统隔离）
+        self.assertEqual(vpn_utils.compute_health_score(80), 80)
 
-    def test_only_risk(self):
-        # risk=66 翻转为 34
-        self.assertEqual(vpn_utils.compute_health_score(None, 66), 34)
-
-    def test_both_none_returns_none(self):
+    def test_none_returns_none(self):
         # 没查过 ≠ 很差，界面显示"—"
-        self.assertIsNone(vpn_utils.compute_health_score(None, None))
-        self.assertIsNone(vpn_utils.compute_health_score("", ""))
-
-    def test_risk_zero_is_best(self):
-        self.assertEqual(vpn_utils.compute_health_score(None, 0), 100)
+        self.assertIsNone(vpn_utils.compute_health_score(None))
+        self.assertIsNone(vpn_utils.compute_health_score(""))
 
     def test_trust_clamped(self):
-        self.assertEqual(vpn_utils.compute_health_score(250, None), 100)
-        self.assertEqual(vpn_utils.compute_health_score(-5, None), 0)
+        self.assertEqual(vpn_utils.compute_health_score(250), 100)
+        self.assertEqual(vpn_utils.compute_health_score(-5), 0)
 
 
 class TestProxycheckBatchParse(unittest.TestCase):
@@ -155,8 +149,8 @@ class TestApplyIntelWritesAllFields(unittest.TestCase):
         self.assertEqual(node["risk_score"], 66)
         self.assertTrue(node["is_flagged_proxy"])
         self.assertEqual(node["subnet_devices"], 300)
-        # 综合健康度取保守值 34
-        self.assertEqual(node["health_score"], 34)
+        # 健康度 = 信誉分（与风控分隔离），不再折算风控分
+        self.assertEqual(node["health_score"], 95)
 
     def test_proxycheck_key_none_skips_api(self):
         # proxycheck_key=None 时必须完全不调用 proxycheck 接口（不消耗额度）。
@@ -173,6 +167,36 @@ class TestApplyIntelWritesAllFields(unittest.TestCase):
         pc_mock.assert_not_called()
         # 未查过风险维度，风险分回退为 None（不污染综合健康度）
         self.assertIsNone(node.get("risk_score"))
+
+
+class TestEnrichRiskOnly(unittest.TestCase):
+    """enrich_risk_only：只查 proxycheck 风控分并写回缓存，不依赖 net.coffee。"""
+
+    def _payload(self):
+        return {
+            "status": "ok",
+            "1.2.3.4": {
+                "risk": "88",
+                "proxy": "yes",
+                "type": "VPN",
+                "devices": {"subnet": "500"},
+                "hostname": "bad-node.example",
+            },
+        }
+
+    def test_returns_risk_map_and_writes_cache(self):
+        with mock.patch.object(vpn_utils.urllib.request, "urlopen", return_value=_resp(self._payload())):
+            out = vpn_utils.enrich_risk_only(["1.2.3.4"], api_key="")
+        self.assertEqual(out["1.2.3.4"]["risk_score"], 88)
+        self.assertTrue(out["1.2.3.4"]["is_flagged_proxy"])
+        # 写回缓存（带 schema/cached_at）
+        cache = vpn_utils.load_ip_cache()
+        self.assertIn("1.2.3.4", cache)
+        self.assertEqual(cache["1.2.3.4"].get("risk_score"), 88)
+        self.assertEqual(cache["1.2.3.4"].get("schema"), vpn_utils.IP_CACHE_SCHEMA)
+
+    def test_empty_input_returns_empty(self):
+        self.assertEqual(vpn_utils.enrich_risk_only([], api_key=""), {})
 
 
 class TestEffectiveHealthScoreFallback(unittest.TestCase):
