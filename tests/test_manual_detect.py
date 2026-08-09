@@ -15,7 +15,9 @@ return，导致手动点"一键检测"后大量新候选节点永远停在"未�
 from __future__ import annotations
 
 import os
+import shutil
 import sys
+import tempfile
 import unittest
 from unittest import mock
 
@@ -220,6 +222,85 @@ class TestIpTypeFilterKeepsPool(unittest.TestCase):
         self.assertIn("ACTIVE", kept)
         # 仅 unavailable 旧节点被删
         self.assertNotIn("FAIL", kept)
+
+
+class TestManualDetectNodes(unittest.TestCase):
+    """独立的 manual_detect_nodes()：选中所有未确认可用节点，绝不漏测（修原混合流程漏测）。"""
+
+    def setUp(self):
+        self.tmp_cfg = tempfile.mkdtemp()
+
+    def tearDown(self):
+        shutil.rmtree(self.tmp_cfg, ignore_errors=True)
+
+    def _run(self, initial, candidates=None, connection_enabled=True):
+        store = _Store(initial)
+        calls: list[list[str]] = []
+
+        def fake_test(ids):
+            calls.append(list(ids))
+            byid = {n["id"]: n for n in store.nodes}
+            for i in ids:
+                if i in byid:
+                    byid[i]["probe_status"] = "available"
+            return []
+
+        cfg = {"connection_enabled": connection_enabled, "routing_mode": "auto", "routing_ip_type": "all"}
+        used_candidates = candidates if candidates is not None else []
+        with mock.patch.object(V, "maintenance_lock", mock.MagicMock()), \
+             mock.patch.object(V, "lock", mock.MagicMock()), \
+             mock.patch.object(V, "CONFIG_DIR", mock.MagicMock()), \
+             mock.patch.object(V, "set_state"), \
+             mock.patch.object(V, "log_to_json"), \
+             mock.patch.object(V, "fetch_candidates", return_value=used_candidates), \
+             mock.patch.object(V, "load_ui_config", return_value=cfg), \
+             mock.patch.object(V, "active_openvpn_running", return_value=False), \
+             mock.patch.object(V, "auto_switch_node"), \
+             mock.patch.object(V, "backfill_unknown_ip_types"), \
+             mock.patch.object(V, "apply_routing_filters", side_effect=lambda nodes, *a, **k: nodes), \
+             mock.patch.object(V, "read_nodes", side_effect=store.read), \
+             mock.patch.object(V, "write_json", side_effect=store.write), \
+             mock.patch.object(V, "test_multiple_nodes", side_effect=fake_test):
+            V.is_connecting = False
+            msg = V.manual_detect_nodes()
+        return store.nodes, calls, msg
+
+    def test_all_unconfirmed_nodes_detected_no_gaps(self):
+        initial = [
+            {"id": "AVAIL", "probe_status": "available", "remote_host": "1.1.1.1", "remote_port": 1194, "config_file": "a.ovpn", "config_text": "A"},
+            {"id": "ACTIVE", "active": True, "probe_status": "unknown", "remote_host": "1.1.1.7", "remote_port": 1194, "config_file": "ac.ovpn", "config_text": "AC"},
+            {"id": "N1", "probe_status": "not_checked", "remote_host": "1.1.1.2", "remote_port": 1194, "config_file": "n1.ovpn", "config_text": "N1"},
+            {"id": "N2", "probe_status": "not_checked", "remote_host": "1.1.1.3", "remote_port": 1194, "config_file": "n2.ovpn", "config_text": "N2"},
+            {"id": "UNK", "probe_status": "unknown", "remote_host": "1.1.1.4", "remote_port": 1194, "config_file": "u.ovpn", "config_text": "U"},
+            {"id": "EMPTY", "probe_status": "", "remote_host": "1.1.1.5", "remote_port": 1194, "config_file": "e.ovpn", "config_text": "E"},
+            {"id": "FAIL", "probe_status": "unavailable", "remote_host": "1.1.1.6", "remote_port": 1194, "config_file": "f.ovpn", "config_text": "F"},
+        ]
+        nodes, calls, msg = self._run(initial)
+        tested = {cid for batch in calls for cid in batch}
+        # 已可用 / 活动节点绝不被重测
+        self.assertNotIn("AVAIL", tested)
+        self.assertNotIn("ACTIVE", tested)
+        # 所有未确认节点（含 not_checked 新候选、unknown、空、unavailable）全部被选中
+        for nid in ("N1", "N2", "UNK", "EMPTY", "FAIL"):
+            self.assertIn(nid, tested, f"{nid} 应被一键检测选中")
+        # 模拟拨通后无残留 not_checked/unknown/空/unavailable
+        byid = {n["id"]: n for n in nodes}
+        for nid in ("N1", "N2", "UNK", "EMPTY", "FAIL"):
+            self.assertEqual(byid[nid]["probe_status"], "available", f"{nid} 检测后应可用")
+        self.assertIn("检测", msg)
+
+    def test_new_candidates_merged_and_detected(self):
+        initial = [
+            {"id": "OLD", "probe_status": "not_checked", "remote_host": "1.1.1.1", "remote_port": 1194, "config_file": "o.ovpn", "config_text": "O"},
+        ]
+        new_cand = {"id": "NEW", "remote_host": "2.2.2.2", "remote_port": 1194, "config_file": "nw.ovpn", "config_text": "NW"}
+        nodes, calls, _ = self._run(initial, candidates=[new_cand])
+        tested = {cid for batch in calls for cid in batch}
+        ids_in_pool = {n["id"] for n in nodes}
+        # 新拉取的候选必须被合并进节点池并被检测（旧流程因 initial_tested_ids 排除而漏测）
+        self.assertIn("NEW", ids_in_pool)
+        self.assertIn("NEW", tested)
+        self.assertIn("OLD", tested)
 
 
 if __name__ == "__main__":

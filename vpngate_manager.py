@@ -1239,6 +1239,119 @@ def backfill_unknown_ip_types(limit: int = IP_TYPE_BACKFILL_LIMIT) -> int:
         return 0
 
 
+def manual_detect_nodes() -> str:
+    """独立的一键检测逻辑（与 maintain_valid_nodes 完全解耦，专门修'漏测'问题）。
+
+    职责单一：把当前节点池里所有'尚未确认可用'的节点真实拨号测一遍。
+    - 先合并最新候选（保留旧节点的探测结论，不删除任何旧节点）
+    - 选中所有 probe_status != 'available' 且非 active 的节点
+      （含 not_checked / unknown / 空 / unavailable，绝不漏测新拉取的候选）
+    - 全量真实拨号测速，**不引入快速首连的 initial_tested_ids 排除逻辑**
+      （这正是原 maintain_valid_nodes(force=True) 漏测的根因：首连 10 个后把它们排除）
+    - 测完不按 IP 类型删节点；若无活动连接则自动连一个可用节点（保持体验一致）
+    """
+    global is_connecting
+    if not maintenance_lock.acquire(blocking=False):
+        msg = "节点维护任务正在运行，请稍后再试"
+        set_state(last_check_message=msg)
+        return msg
+    with lock:
+        if is_connecting:
+            maintenance_lock.release()
+            msg = "当前已有连接或节点测试任务正在运行，请稍后再试"
+            set_state(last_check_message=msg)
+            return msg
+        is_connecting = True
+    try:
+        # 1) 合并最新候选：旧节点全部保留，新候选补入（默认 not_checked），不删除任何节点
+        set_state(is_connecting=True, last_check_message="一键检测：正在拉取最新候选并合并节点池...")
+        try:
+            candidates = fetch_candidates()
+        except Exception:
+            vpn_utils.check_and_fix_dns()
+            candidates = []
+        with lock:
+            current_nodes = read_nodes()
+            current_ids = {str(n.get("id")) for n in current_nodes if n.get("id")}
+            merged: list[dict[str, Any]] = list(current_nodes)
+            seen: set[str] = {str(n.get("id")) for n in current_nodes if n.get("id")}
+            for cand in candidates:
+                cid = str(cand.get("id"))
+                if cid not in seen:
+                    merged.append(cand)
+                    seen.add(cid)
+            if len(merged) > 1000:
+                merged = merged[:1000]
+            for n in merged:
+                config_path = CONFIG_DIR / Path(n["config_file"]).name
+                if not config_path.exists():
+                    try:
+                        config_path.write_text(n["config_text"], encoding="utf-8")
+                    except Exception:
+                        pass
+            write_json(NODES_FILE, merged)
+            added_count = len([c for c in candidates if str(c.get("id")) not in current_ids])
+            set_state(
+                last_fetch_at=time.time(),
+                last_fetch_status="ok" if candidates else "error",
+                last_fetch_added=added_count,
+                last_node_total=len(merged),
+                last_refresh_at=time.time(),
+            )
+
+        # 2) 选中所有尚未确认可用的节点（不含 available 与 active），全量真实拨号，绝不漏测
+        with lock:
+            current_nodes = read_nodes()
+            to_test = [
+                n for n in current_nodes
+                if not n.get("active") and n.get("probe_status") != "available"
+            ]
+        to_test_ids = [n["id"] for n in to_test]
+        msg = f"一键检测：待检测节点共 {len(to_test_ids)} 个（已排除可用/正在连接）"
+        print(f"[一键检测] {msg}", flush=True)
+        log_to_json("INFO", "Main", msg)
+        set_state(is_connecting=True, last_check_message="一键检测：正在并发拨号测速所有未确认节点...")
+        if to_test_ids:
+            test_multiple_nodes(to_test_ids)
+
+        # 3) 富化可用节点的 IP 情报，逐步填满节点池信息
+        backfill_unknown_ip_types()
+
+        # 4) 若无活动连接且有可用节点，自动连一个（保持与之前一致的体验）
+        with lock:
+            final_nodes = read_nodes()
+        if not active_openvpn_running():
+            ui_cfg = load_ui_config()
+            if ui_cfg.get("connection_enabled", True) and ui_cfg.get("routing_mode", "auto") != "fixed_ip":
+                available_candidates = [n for n in final_nodes if n.get("probe_status") == "available"]
+                available_candidates = apply_routing_filters(available_candidates, ui_cfg)
+                if available_candidates:
+                    auto_switch_node()
+
+        available = len([n for n in final_nodes if n.get("probe_status") == "available"])
+        unavailable = len([n for n in final_nodes if n.get("probe_status") == "unavailable"])
+        message = (
+            f"一键检测完成：本轮检测 {len(to_test_ids)} 个节点。"
+            f"当前池可用 {available} 个、不可用 {unavailable} 个、总计 {len(final_nodes)} 个。"
+        )
+        set_state(
+            last_check_at=time.time(),
+            last_check_message=message,
+            valid_nodes=available,
+            last_refresh_at=time.time(),
+            last_node_total=len(final_nodes),
+            last_fetch_added=added_count,
+        )
+        print(f"[一键检测] {message}", flush=True)
+        log_to_json("INFO", "Main", message)
+        return message
+    except Exception:
+        raise
+    finally:
+        is_connecting = False
+        maintenance_lock.release()
+
+
 def maintain_valid_nodes(force: bool = False) -> str:
     global active_openvpn_process, active_openvpn_node_id, is_connecting
     ensure_dirs()
@@ -2514,7 +2627,7 @@ class Handler(BaseHTTPRequestHandler):
 
         if effective_path == "/api/check":
             try:
-                self.send_json({"ok": True, "message": maintain_valid_nodes(force=True)})
+                self.send_json({"ok": True, "message": manual_detect_nodes()})
             except Exception as exc:
                 self.send_json({"ok": False, "error": str(exc)}, HTTPStatus.INTERNAL_SERVER_ERROR)
         elif effective_path == "/api/refresh_nodes":
