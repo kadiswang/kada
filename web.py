@@ -1428,7 +1428,7 @@ INDEX_HTML = r"""<!doctype html>
     @keyframes toastIn { from { transform: translateX(16px); opacity: 0; } to { transform: translateX(0); opacity: 1; } }
     
     /* 表格样式 - 覆盖login页面遗留的danger-bg */
-    table { border-collapse: collapse; table-layout: fixed; }
+    table { border-collapse: collapse; table-layout: fixed; min-width: 1080px; }
     th { padding: 10px 14px; background: var(--surface-2); border-bottom: 1px solid var(--border); font-size: 12px; color: var(--text-secondary); font-weight: 600; }
     td { padding: 10px 14px; background: var(--surface); border-bottom: 1px solid var(--border); color: var(--text-primary); font-size: 13px; }
     tbody tr:hover td { background: var(--surface-2); }
@@ -1671,8 +1671,8 @@ INDEX_HTML = r"""<!doctype html>
           <tr>
             <th style="width: 90px;">状态</th>
             <th style="width: 160px;">IP 地址 : 端口</th>
-            <th>物理位置</th>
-            <th>运营主体 / ISP</th>
+            <th style="width: 150px;">物理位置</th>
+            <th style="width: 210px;">运营主体 / ISP</th>
             <th style="width: 80px;">IP 类型</th>
             <th style="width: 80px;">延迟</th>
             <th style="width: 80px;">健康度</th>
@@ -2121,7 +2121,7 @@ INDEX_HTML = r"""<!doctype html>
               <tr>
                 <th style="width: 90px;">状态</th>
                 <th style="width: 160px;">IP 地址 : 端口</th>
-                <th>物理位置</th>
+                <th style="width: 150px;">物理位置</th>
                 <th style="width: 80px;">IP 类型</th>
                 <th style="width: 80px;">延迟</th>
                 <th style="width: 80px;">健康度</th>
@@ -2717,8 +2717,8 @@ function render(){
       return `<tr ${rowClass} style="display: table-row !important;">
         <td style="display: table-cell !important; white-space: nowrap;"><span class="badge ${badgeClass}">${badgeText}</span></td>
         <td class="mono" style="white-space: nowrap; max-width: 220px; overflow: hidden; text-overflow: ellipsis; display: table-cell !important;" title="${esc(n.ip||n.remote_host)}:${n.remote_port||""}">${esc(n.ip||n.remote_host)}:${n.remote_port||""}</td>
-        <td style="white-space: nowrap; overflow: hidden; text-overflow: ellipsis; display: table-cell !important;" title="${esc(displayLocation)}">${esc(displayLocation)}</td>
-        <td style="white-space: nowrap; overflow: hidden; text-overflow: ellipsis; display: table-cell !important;" title="${esc(n.owner||n.as_name||"-")}">${esc(n.owner||n.as_name||"-")}</td>
+        <td style="white-space: normal; word-break: break-word; display: table-cell !important;" title="${esc(displayLocation)}">${esc(displayLocation)}</td>
+        <td style="white-space: normal; word-break: break-word; display: table-cell !important;" title="${esc(n.owner||n.as_name||"-")}">${esc(n.owner||n.as_name||"-")}</td>
         <td style="white-space: nowrap; max-width: 110px; overflow: hidden; text-overflow: ellipsis; display: table-cell !important;" title="${esc(translateIpType(n.ip_type))}">${esc(translateIpType(n.ip_type))}</td>
         <td style="white-space: nowrap; display: table-cell !important;">${latencyText}</td>
         <td style="white-space: nowrap; display: table-cell !important;">
@@ -2817,7 +2817,7 @@ function renderOverviewNodes(activeNode) {
     return '<tr' + (isActive ? ' class="active-row"' : '') + ' style="display:table-row!important;">' +
       '<td style="display:table-cell!important;white-space:nowrap;"><span class="badge ' + badgeClass + '">' + badgeText + '</span></td>' +
       '<td class="mono" style="white-space:nowrap;max-width:220px;overflow:hidden;text-overflow:ellipsis;display:table-cell!important;" title="' + esc(n.ip||n.remote_host) + ':' + (n.remote_port||"") + '">' + esc(n.ip||n.remote_host) + ':' + (n.remote_port||"") + '</td>' +
-      '<td style="white-space:nowrap;overflow:hidden;text-overflow:ellipsis;display:table-cell!important;" title="' + esc(displayLocation) + '">' + esc(displayLocation) + '</td>' +
+      '<td style="white-space:normal;word-break:break-word;display:table-cell!important;" title="' + esc(displayLocation) + '">' + esc(displayLocation) + '</td>' +
       '<td style="white-space:nowrap;display:table-cell!important;">' + esc(translateIpType(n.ip_type)) + '</td>' +
       '<td style="white-space:nowrap;display:table-cell!important;">' + latencyText + '</td>' +
       '<td style="white-space:nowrap;display:table-cell!important;">' + healthCell(n) + '</td>' +
@@ -3825,7 +3825,7 @@ async function renderEgressNodeList() {
     return '<tr' + (isActive ? ' class="active-row"' : '') + ' style="display:table-row!important;">' +
       '<td style="display:table-cell!important;white-space:nowrap;"><span class="badge ' + badgeClass + '">' + badgeText + '</span></td>' +
       '<td class="mono" style="white-space:nowrap;max-width:220px;overflow:hidden;text-overflow:ellipsis;display:table-cell!important;" title="' + esc(n.ip||n.remote_host) + ':' + (n.remote_port||"") + '">' + esc(n.ip||n.remote_host) + ':' + (n.remote_port||"") + '</td>' +
-      '<td style="white-space:nowrap;overflow:hidden;text-overflow:ellipsis;display:table-cell!important;" title="' + esc(displayLocation) + '">' + esc(displayLocation) + '</td>' +
+      '<td style="white-space:normal;word-break:break-word;display:table-cell!important;" title="' + esc(displayLocation) + '">' + esc(displayLocation) + '</td>' +
       '<td style="white-space:nowrap;display:table-cell!important;">' + esc(translateIpType(n.ip_type)) + '</td>' +
       '<td style="white-space:nowrap;display:table-cell!important;">' + latencyText + '</td>' +
       '<td style="white-space:nowrap;display:table-cell!important;">' + healthCell(n) + '</td>' +
