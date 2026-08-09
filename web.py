@@ -1390,18 +1390,21 @@ INDEX_HTML = r"""<!doctype html>
     .health-unknown { background: rgba(148, 163, 184, 0.18); color: #64748b; }
 
     /* 风控分列 + 悬停风控情报卡片 */
-    .risk-cell { font-weight: 600; font-size: 12px; padding: 2px 6px; border-radius: 4px; display: inline-block; cursor: help; }
+    .risk-cell { font-weight: 600; font-size: 12px; padding: 2px 6px; border-radius: 4px; display: inline-block; cursor: help; vertical-align: middle; }
     .risk-safe { background: rgba(16, 185, 129, 0.15); color: #059669; }
     .risk-warn { background: rgba(245, 158, 11, 0.15); color: #d97706; }
     .risk-bad  { background: rgba(239, 68, 68, 0.15); color: #dc2626; }
     .risk-unknown { background: rgba(148, 163, 184, 0.18); color: #64748b; }
     /* 风控分单元格内的"风控异常"标记（属于风控分系统，不在健康度列） */
+    .risk-cell-wrap { display: inline-flex; align-items: center; gap: 8px; flex-wrap: nowrap; white-space: nowrap; vertical-align: middle; }
     .risk-anomaly-badge {
-      margin-left: 6px; padding: 1px 7px; border-radius: 999px;
+      padding: 1px 7px; border-radius: 999px;
       font-size: 11px; font-weight: 700; white-space: nowrap;
       background: rgba(239, 68, 68, 0.16); color: #dc2626;
       border: 1px solid rgba(239, 68, 68, 0.35);
     }
+    .table-actions { display: flex; align-items: center; gap: 8px; flex-wrap: nowrap; white-space: nowrap; }
+    .risk-col { min-width: 150px; }
     .risk-popover {
       position: fixed; z-index: 9999; width: 286px;
       background: var(--surface, #fff); border: 1px solid var(--border-color, #e2e8f0);
@@ -1673,7 +1676,7 @@ INDEX_HTML = r"""<!doctype html>
             <th style="width: 80px;">IP 类型</th>
             <th style="width: 80px;">延迟</th>
             <th style="width: 80px;">健康度</th>
-            <th style="width: 80px;">风控分</th>
+            <th class="risk-col" style="width: 150px;">风控分</th>
             <th style="width: 160px;">操作</th>
           </tr>
         </thead>
@@ -2122,7 +2125,7 @@ INDEX_HTML = r"""<!doctype html>
                 <th style="width: 80px;">IP 类型</th>
                 <th style="width: 80px;">延迟</th>
                 <th style="width: 80px;">健康度</th>
-                <th style="width: 80px;">风控分</th>
+                <th class="risk-col" style="width: 150px;">风控分</th>
                 <th style="width: 160px;">操作</th>
               </tr>
             </thead>
@@ -2272,15 +2275,15 @@ function getRiskClass(v) {
 
 // 节点列表的"风控分"列单元格：未查询显示"—"，悬停弹"风控情报"卡片。
 function riskCell(n) {
-  if (!n) return '<span class="risk-cell risk-unknown">—</span>';
+  if (!n) return '<span class="risk-cell-wrap"><span class="risk-cell risk-unknown">—</span></span>';
   var risk = parseInt(n.risk_score);
   if (isNaN(risk)) {
-    return '<span class="risk-cell risk-unknown" onmouseenter="showRiskIntel(\'' + esc(n.id) + '\', event)" onmouseleave="hideRiskIntel()">—</span>';
+    return '<span class="risk-cell-wrap"><span class="risk-cell risk-unknown" onmouseenter="showRiskIntel(\'' + esc(n.id) + '\', event)" onmouseleave="hideRiskIntel()">—</span></span>';
   }
   var anomalyBadge = isRiskAnomaly(n)
     ? '<span class="risk-anomaly-badge" title="' + escAttr(riskAnomalyTitle(n)) + '">⚠ 风控异常</span>'
     : '';
-  return '<span class="risk-cell ' + getRiskClass(risk) + '" onmouseenter="showRiskIntel(\'' + esc(n.id) + '\', event)" onmouseleave="hideRiskIntel()">' + risk + '</span>' + anomalyBadge;
+  return '<span class="risk-cell-wrap"><span class="risk-cell ' + getRiskClass(risk) + '" onmouseenter="showRiskIntel(\'' + esc(n.id) + '\', event)" onmouseleave="hideRiskIntel()">' + risk + '</span>' + anomalyBadge + '</span>';
 }
 
 // 风控情报卡片完整内容（悬停弹出）。
@@ -2721,7 +2724,7 @@ function render(){
         <td style="white-space: nowrap; display: table-cell !important;">
           ${healthCell(n)}
         </td>
-        <td style="white-space: nowrap; display: table-cell !important; text-align: center;">
+        <td class="risk-col" style="white-space: nowrap; display: table-cell !important; text-align: center;">
           ${riskCell(n)}
         </td>
         <td style="display: table-cell !important;">
@@ -2818,7 +2821,7 @@ function renderOverviewNodes(activeNode) {
       '<td style="white-space:nowrap;display:table-cell!important;">' + esc(translateIpType(n.ip_type)) + '</td>' +
       '<td style="white-space:nowrap;display:table-cell!important;">' + latencyText + '</td>' +
       '<td style="white-space:nowrap;display:table-cell!important;">' + healthCell(n) + '</td>' +
-      '<td style="white-space:nowrap;display:table-cell!important;text-align:center;">' + riskCell(n) + '</td>' +
+      '<td class="risk-col" style="white-space:nowrap;display:table-cell!important;text-align:center;">' + riskCell(n) + '</td>' +
       '<td style="display:table-cell!important;">' + connectBtn + '</td>' +
       '</tr>';
   }).join("");
@@ -3826,7 +3829,7 @@ async function renderEgressNodeList() {
       '<td style="white-space:nowrap;display:table-cell!important;">' + esc(translateIpType(n.ip_type)) + '</td>' +
       '<td style="white-space:nowrap;display:table-cell!important;">' + latencyText + '</td>' +
       '<td style="white-space:nowrap;display:table-cell!important;">' + healthCell(n) + '</td>' +
-      '<td style="white-space:nowrap;display:table-cell!important;text-align:center;">' + riskCell(n) + '</td>' +
+      '<td class="risk-col" style="white-space:nowrap;display:table-cell!important;text-align:center;">' + riskCell(n) + '</td>' +
       '<td style="display:table-cell!important;">' + connectBtn + '</td>' +
       '</tr>';
   }).join("");
