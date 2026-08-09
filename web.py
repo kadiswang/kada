@@ -2138,6 +2138,7 @@ INDEX_HTML = r"""<!doctype html>
 </div>
 <script>
 let nodes=[], state={}, testingNodeIds = new Set(), batchTesting = false;
+let gRiskIntelOn = false; // 风控情报(风控分列)开关：由 state.proxycheck.enabled 决定
 let currentPage = 1;
 const pageSize = 99999;
 let currentPageNodes = [];
@@ -2284,6 +2285,21 @@ function riskCell(n) {
     ? '<span class="risk-anomaly-badge" title="' + escAttr(riskAnomalyTitle(n)) + '">⚠ 风控异常</span>'
     : '';
   return '<span class="risk-cell-wrap"><span class="risk-cell ' + getRiskClass(risk) + '" onmouseenter="showRiskIntel(\'' + esc(n.id) + '\', event)" onmouseleave="hideRiskIntel()">' + risk + '</span>' + anomalyBadge + '</span>';
+}
+
+// 风控分列是否显示：取决于"启用风控情报"开关（state.proxycheck.enabled）。
+// 关闭时，节点列表不渲染风控分列（表头 + 单元格都不显示，避免列错位）。
+function refreshRiskIntelVisibility() {
+  gRiskIntelOn = !!(state.proxycheck && state.proxycheck.enabled);
+  var heads = document.querySelectorAll('th.risk-col');
+  for (var i = 0; i < heads.length; i++) {
+    heads[i].style.display = gRiskIntelOn ? '' : 'none';
+  }
+}
+// 风控分单元格：开关关闭时返回空（不占列），与隐藏的表头保持一致。
+function riskTd(n) {
+  if (!gRiskIntelOn) return '';
+  return '<td class="risk-col" style="white-space: nowrap; display: table-cell !important; text-align: center;">' + riskCell(n) + '</td>';
 }
 
 // 风控情报卡片完整内容（悬停弹出）。
@@ -2601,6 +2617,7 @@ function renderEgressActiveNodeCard(slotKey) {
 function renderActiveNodeCardForEgress(slotKey) { renderHomeActiveNodeCard(slotKey); }
 
 function render(){
+  refreshRiskIntelVisibility();
   const activeNodeId = state.active_openvpn_node_id;
   const activeNode = nodes.find(n => n && (n.active || n.id === activeNodeId));
 
@@ -2724,9 +2741,7 @@ function render(){
         <td style="white-space: nowrap; display: table-cell !important;">
           ${healthCell(n)}
         </td>
-        <td class="risk-col" style="white-space: nowrap; display: table-cell !important; text-align: center;">
-          ${riskCell(n)}
-        </td>
+        ${riskTd(n)}
         <td style="display: table-cell !important;">
           <div class="table-actions">
             ${favBtn}
@@ -2752,6 +2767,7 @@ function render(){
 }
 
 function renderOverviewNodes(activeNode) {
+  refreshRiskIntelVisibility();
   const container = $("overview_rows");
   const label = $("overview_filter_label");
   if (!container) return;
@@ -2821,7 +2837,7 @@ function renderOverviewNodes(activeNode) {
       '<td style="white-space:nowrap;display:table-cell!important;">' + esc(translateIpType(n.ip_type)) + '</td>' +
       '<td style="white-space:nowrap;display:table-cell!important;">' + latencyText + '</td>' +
       '<td style="white-space:nowrap;display:table-cell!important;">' + healthCell(n) + '</td>' +
-      '<td class="risk-col" style="white-space:nowrap;display:table-cell!important;text-align:center;">' + riskCell(n) + '</td>' +
+      riskTd(n) +
       '<td style="display:table-cell!important;">' + connectBtn + '</td>' +
       '</tr>';
   }).join("");
@@ -3709,6 +3725,7 @@ function selectEgress(slotKey) { selectEgressCard(slotKey); }
 
 // ---- 出站管理页：节点列表（独立 DOM 容器 egress_node_section / egress_rows / egress_filter_label） ----
 async function renderEgressNodeList() {
+  refreshRiskIntelVisibility();
   const section = $("egress_node_section");
   const rows = $("egress_rows");
   const label = $("egress_filter_label");
@@ -3829,7 +3846,7 @@ async function renderEgressNodeList() {
       '<td style="white-space:nowrap;display:table-cell!important;">' + esc(translateIpType(n.ip_type)) + '</td>' +
       '<td style="white-space:nowrap;display:table-cell!important;">' + latencyText + '</td>' +
       '<td style="white-space:nowrap;display:table-cell!important;">' + healthCell(n) + '</td>' +
-      '<td class="risk-col" style="white-space:nowrap;display:table-cell!important;text-align:center;">' + riskCell(n) + '</td>' +
+      riskTd(n) +
       '<td style="display:table-cell!important;">' + connectBtn + '</td>' +
       '</tr>';
   }).join("");
@@ -4550,6 +4567,10 @@ async function saveIntel(e) {
           api_key: proxycheck.key_cleared ? "" : proxycheck.api_key,
           key_set: proxycheck.key_cleared ? false : !!proxycheck.api_key
         };
+        // 立即按新开关刷新风控分列显隐 + 重渲染当前页表格
+        refreshRiskIntelVisibility();
+        if (typeof render === "function") render();
+        if (typeof renderEgressNodeList === "function") renderEgressNodeList();
       }
       setTimeout(closeIntelModal, 1200);
     } else {

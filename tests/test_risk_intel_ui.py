@@ -40,6 +40,16 @@ class TestRiskIntelUI(unittest.TestCase):
         # 节点行渲染必须调用 riskCell(n) 输出该列
         self.assertIn("riskCell(n)", self.html)
 
+    def test_risk_column_gated_by_switch(self):
+        # 风控分列必须由"启用风控情报"开关控制显隐：
+        # 1) 存在 riskTd（开关关闭时返回空，不占列）与 refreshRiskIntelVisibility（切换表头）
+        # 2) 表头带 risk-col 类，JS 据此 display:none 隐藏
+        # 3) 节点行渲染走 riskTd(n) 而非直接 riskCell(n)，保证关闭时整列消失
+        self.assertIn("function riskTd(n)", self.html)
+        self.assertIn("function refreshRiskIntelVisibility", self.html)
+        self.assertIn('th class="risk-col"', self.html)
+        self.assertIn("riskTd(n)", self.html)
+
     def test_risk_card_shows_full_intel_fields(self):
         # 悬停卡片应覆盖：风险分、是否标记代理、同网段设备、综合健康度
         card = "function riskIntelCardHtml(n)"
