@@ -8,6 +8,7 @@ Step 2 of modular refactor. Pure logic only — no OpenVPN runtime access.
 import json
 import os
 import random
+import string
 import time
 from typing import Any
 
@@ -20,11 +21,11 @@ from common import (
 
 def _cached_load_ui_config() -> dict[str, Any]:
     global _config_cache, _config_cache_time
-    now = time.time()
-    if _config_cache is not None and now - _config_cache_time < CONFIG_CACHE_TTL:
-        return _config_cache
-    result = load_ui_config()
     with lock:
+        now = time.time()
+        if _config_cache is not None and now - _config_cache_time < CONFIG_CACHE_TTL:
+            return _config_cache
+        result = load_ui_config()
         _config_cache = result
         _config_cache_time = now
     return result
@@ -125,7 +126,6 @@ def load_ui_config() -> dict[str, Any]:
 
 
 def generate_random_password() -> str:
-    import string
     chars = string.ascii_letters + string.digits
     while True:
         pwd = "".join(random.choices(chars, k=12))
@@ -138,7 +138,6 @@ def generate_random_password() -> str:
 
 
 def generate_random_username() -> str:
-    import string
     chars = string.ascii_letters + string.digits
     while True:
         uname = "".join(random.choices(chars, k=12))

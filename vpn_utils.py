@@ -511,6 +511,39 @@ def enrich_ip_info(
             apply_intel_to_node(node, new_entries[ip])
 
 
+def _derive_ip_type_quality(
+    is_mobile: bool,
+    is_datacenter: bool,
+    is_proxy: bool,
+    is_vpn: bool,
+    is_residential: bool,
+) -> tuple[str, str]:
+    """由原始布尔标记推导 (ip_type, quality)，供 net.coffee / ip-api 两套查询复用。
+
+    判定优先级：移动网 > 机房/代理/VPN > 住宅 > 未知。
+    """
+    ip_type = "unknown"
+    if is_mobile:
+        ip_type = "mobile"
+    elif is_datacenter or is_proxy or is_vpn:
+        ip_type = "hosting"
+    elif is_residential:
+        ip_type = "residential"
+
+    quality = "normal"
+    if is_proxy:
+        quality = "proxy"
+    elif is_datacenter:
+        quality = "datacenter"
+    elif is_vpn:
+        quality = "vpn"
+    elif is_mobile:
+        quality = "mobile"
+    elif is_residential:
+        quality = "residential"
+    return ip_type, quality
+
+
 def query_ip_netcoffee(ip: str) -> dict[str, Any] | None:
     """Query IP info from net.coffee API."""
     try:
@@ -530,25 +563,13 @@ def query_ip_netcoffee(ip: str) -> dict[str, Any] | None:
 
         # 判定优先级：移动网 > 机房/代理/VPN > 住宅 > 未知
         # 只有三类标记全都拿不到时才归 unknown，交由路由开关决定去留
-        ip_type = "unknown"
-        if data.get("is_mobile"):
-            ip_type = "mobile"
-        elif data.get("is_datacenter") or data.get("is_proxy") or data.get("is_vpn"):
-            ip_type = "hosting"
-        elif is_resi or company_type in ("isp", "residential", "business", "education"):
-            ip_type = "residential"
-
-        quality = "normal"
-        if data.get("is_proxy"):
-            quality = "proxy"
-        elif data.get("is_datacenter"):
-            quality = "datacenter"
-        elif data.get("is_vpn"):
-            quality = "vpn"
-        elif data.get("is_mobile"):
-            quality = "mobile"
-        elif is_resi:
-            quality = "residential"
+        ip_type, quality = _derive_ip_type_quality(
+            bool(data.get("is_mobile")),
+            bool(data.get("is_datacenter")),
+            bool(data.get("is_proxy")),
+            bool(data.get("is_vpn")),
+            is_resi or company_type in ("isp", "residential", "business", "education"),
+        )
 
         country = data.get("country") or ""
         region = data.get("region") or ""
@@ -597,23 +618,13 @@ def query_ip_api(ip: str) -> dict[str, Any] | None:
         isp_name = str(data.get("isp") or data.get("org") or "").strip()
         is_resi = not data.get("hosting") and not data.get("proxy") and not data.get("mobile") and bool(isp_name)
 
-        ip_type = "unknown"
-        if data.get("mobile"):
-            ip_type = "mobile"
-        elif data.get("hosting") or data.get("proxy"):
-            ip_type = "hosting"
-        elif is_resi:
-            ip_type = "residential"
-
-        quality = "normal"
-        if data.get("proxy"):
-            quality = "proxy"
-        elif data.get("hosting"):
-            quality = "datacenter"
-        elif data.get("mobile"):
-            quality = "mobile"
-        elif is_resi:
-            quality = "residential"
+        ip_type, quality = _derive_ip_type_quality(
+            bool(data.get("mobile")),
+            bool(data.get("hosting")),
+            bool(data.get("proxy")),
+            False,  # ip-api 无独立 VPN 字段
+            is_resi,
+        )
 
         loc = " ".join(part for part in [data.get("country"), data.get("regionName"), data.get("city")] if part)
 
@@ -655,6 +666,14 @@ def query_ip_api(ip: str) -> dict[str, Any] | None:
 PROXYCHECK_BATCH_SIZE = 25
 
 
+def _clamp_score_to_100(value: Any) -> int | None:
+    """把任意分数钳制到 [0, 100]；无法解析为 int 时返回 None。"""
+    try:
+        return max(0, min(100, int(value)))
+    except (TypeError, ValueError):
+        return None
+
+
 def compute_health_score(trust_score: Any) -> int | None:
     """健康度 = net.coffee 信誉分（trust_score），方向"越高越好"（0-100）。
 
@@ -666,10 +685,7 @@ def compute_health_score(trust_score: Any) -> int | None:
     """
     if trust_score is None or trust_score == "":
         return None
-    try:
-        return max(0, min(100, int(trust_score)))
-    except (TypeError, ValueError):
-        return None
+    return _clamp_score_to_100(trust_score)
 
 
 def query_proxycheck_batch(ips: list[str], api_key: str = "") -> dict[str, dict[str, Any]]:

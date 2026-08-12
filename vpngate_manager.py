@@ -107,7 +107,7 @@ from nodes import (
     socks5_address_bytes, read_socks5_connect_reply, format_host_port,
     fetch_api_text_via_proxy,
     parse_vpngate_rows, decode_config, load_blacklist, mark_blacklisted, row_to_node,
-    read_nodes, cached_nodes,
+    read_nodes,
     sort_all_nodes, apply_routing_filters, normalized_country_name, country_matches,
     probe_priority_key, validate_node_allowed_by_routing,
     active_test_indexes, test_indexes_lock, get_free_test_index, release_test_index,
@@ -384,7 +384,7 @@ def fetch_candidates() -> list[dict[str, Any]]:
     candidates: list[dict[str, Any]] = []
     seen_ips = set()
     
-    has_cache = len(cached_nodes()) > 0
+    has_cache = len(read_nodes()) > 0
     max_attempts = 1 if has_cache else 3
     
     attempts_targets = [
@@ -1590,12 +1590,12 @@ def maintain_valid_nodes(force: bool = False) -> str:
                         )
                         # IP 类型过滤：仅影响"连接时挑选哪种节点"，不再删除节点池中的节点。
                         # 用户明确诉求：节点只按"连不通(unavailable)"淘汰，不因 IP 类型被删。
-                        if load_ui_config().get("routing_ip_type", "all") != "all":
+                        if ui_cfg.get("routing_ip_type", "all") != "all":
                             backfill_unknown_ip_types()
                             with lock:
                                 final_nodes = read_nodes()
                                 active_id = active_openvpn_node_id
-                                _ip_type_filter = load_ui_config().get("routing_ip_type", "all")
+                                _ip_type_filter = ui_cfg.get("routing_ip_type", "all")
                                 _allowed_types = ("residential", "mobile") if _ip_type_filter == "residential" else ("hosting",)
                                 _typed = [
                                     n for n in final_nodes
@@ -1666,7 +1666,7 @@ def maintain_valid_nodes(force: bool = False) -> str:
 
             final_nodes = read_nodes()
             active_id = active_openvpn_node_id
-            _ip_type_filter = load_ui_config().get("routing_ip_type", "all")
+            _ip_type_filter = ui_cfg.get("routing_ip_type", "all")
             if _ip_type_filter != "all":
                 _allowed_types = ("residential", "mobile") if _ip_type_filter == "residential" else ("hosting",)
                 _typed = [

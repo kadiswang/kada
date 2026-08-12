@@ -7,6 +7,7 @@
 """
 from __future__ import annotations
 
+import atexit
 import json
 import os
 import re
@@ -89,6 +90,9 @@ NODE_EXPORT_FIELDS = [
 
 lock = threading.RLock()
 _last_cleanup_time = 0.0
+_log_fh = None
+_log_fh_date = ""
+_log_fh_dir = None
 
 # 节点缓存（单一真相源）：read_nodes 与 write_json 只能通过下方访问器操作，
 # 否则拆分成多文件后某一处令缓存失效会失效，导致 /api/nodes 返回陈旧数据。
@@ -159,23 +163,49 @@ def cleanup_old_logs(logs_dir: Path) -> None:
 
 
 def log_to_json(level: str, module: str, message: str) -> None:
+    global _log_fh, _log_fh_date
     try:
         logs_dir = DATA_DIR / "logs"
         logs_dir.mkdir(exist_ok=True, parents=True)
         date_str = time.strftime("%Y-%m-%d", time.localtime())
-        log_file = logs_dir / f"{date_str}.json"
         entry = {
             "timestamp": time.strftime("%Y-%m-%d %H:%M:%S", time.localtime()),
             "level": level,
             "module": module,
             "message": message,
         }
+        line = json.dumps(entry, ensure_ascii=False) + "\n"
         with lock:
-            with open(log_file, "a", encoding="utf-8") as f:
-                f.write(json.dumps(entry, ensure_ascii=False) + "\n")
+            # 常驻文件句柄 + 按天/按目录滚动：避免每条日志都 open/close 文件（高频日志下
+            # 频繁开关文件并被全局锁串行化，是明显的写入瓶颈）。目录变化（如测试切换
+            # 数据目录）时也重新打开，避免日志串到旧目录。
+            if _log_fh is None or _log_fh_dir != logs_dir or _log_fh_date != date_str or getattr(_log_fh, "closed", True):
+                if _log_fh is not None:
+                    try:
+                        _log_fh.close()
+                    except Exception:
+                        pass
+                _log_fh = open(logs_dir / f"{date_str}.json", "a", encoding="utf-8")
+                _log_fh_date = date_str
+                _log_fh_dir = logs_dir
+            _log_fh.write(line)
+            _log_fh.flush()
         cleanup_old_logs(logs_dir)
     except Exception as e:
         print(f"[Log Error] Failed to write JSON log: {e}", flush=True)
+
+
+def _close_log_handle() -> None:
+    global _log_fh
+    if _log_fh is not None:
+        try:
+            _log_fh.close()
+        except Exception:
+            pass
+        _log_fh = None
+
+
+atexit.register(_close_log_handle)
 
 
 def parse_int(value: Any) -> int:

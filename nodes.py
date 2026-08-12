@@ -312,7 +312,11 @@ def row_to_node(row: dict[str, str], config_text: str) -> dict[str, Any]:
     config_path = CONFIG_DIR / f"{node_id}.ovpn"
 
     country_long = row.get("CountryLong", "")
-    country_zh = vpn_utils.COUNTRY_TRANSLATIONS.get(country_long, vpn_utils.COUNTRY_TRANSLATIONS.get(country_long.strip(), country_long))
+    country_zh = (
+        vpn_utils.COUNTRY_TRANSLATIONS.get(country_long)
+        or vpn_utils.COUNTRY_TRANSLATIONS.get(country_long.strip())
+        or country_long
+    )
     return {
         "id": node_id,
         "country": country_zh,
@@ -362,10 +366,6 @@ def read_nodes() -> list[dict[str, Any]]:
         return result
 
 
-def cached_nodes() -> list[dict[str, Any]]:
-    return read_nodes()
-
-
 # ---------------------------------------------------------------------------
 # 排序 / 路由过滤
 # ---------------------------------------------------------------------------
@@ -389,6 +389,22 @@ def sort_all_nodes(nodes: list[dict[str, Any]]) -> list[dict[str, Any]]:
     return available_nodes + untested_nodes + unavailable_nodes
 
 
+def node_passes_ip_type(node_ip_type: Any, setting: str, include_unknown: bool) -> bool:
+    """判断节点是否满足 IP 类型路由设置（选优逻辑共用，防止口径漂移）。
+
+    - setting == "all"：放行所有
+    - "residential"：住宅或移动（include_unknown 时 unknown/空 也放行）
+    - "hosting"：机房（include_unknown 时 unknown/空 也放行）
+    """
+    if setting == "all":
+        return True
+    t = node_ip_type or "unknown"
+    allowed = ("residential", "mobile") if setting == "residential" else ("hosting",)
+    if t in allowed:
+        return True
+    return include_unknown and t in ("unknown", "")
+
+
 def apply_routing_filters(
     nodes: list[dict[str, Any]],
     ui_cfg: dict[str, Any],
@@ -408,17 +424,10 @@ def apply_routing_filters(
         candidates = [n for n in candidates if n.get("id") in fav_ids]
 
     routing_ip_type = ui_cfg.get("routing_ip_type", "all")
-    if routing_ip_type == "residential":
+    if routing_ip_type != "all":
         candidates = [
             n for n in candidates
-            if n.get("ip_type") in ("residential", "mobile")
-            or (include_unknown_ip_type and (not n.get("ip_type") or n.get("ip_type") == "unknown"))
-        ]
-    elif routing_ip_type == "hosting":
-        candidates = [
-            n for n in candidates
-            if n.get("ip_type") == "hosting"
-            or (include_unknown_ip_type and (not n.get("ip_type") or n.get("ip_type") == "unknown"))
+            if node_passes_ip_type(n.get("ip_type"), routing_ip_type, include_unknown_ip_type)
         ]
 
     min_health = ui_cfg.get("min_health_score", 0)
@@ -467,10 +476,8 @@ def effective_health_score(node: dict[str, Any]) -> int:
     value = node.get("health_score")
     if value is None or value == "":
         value = node.get("trust_score")
-    try:
-        return max(0, min(100, int(value)))
-    except (TypeError, ValueError):
-        return 0
+    score = vpn_utils._clamp_score_to_100(value)
+    return score if score is not None else 0
 
 
 def normalized_country_name(country: Any) -> str:
@@ -553,6 +560,7 @@ def select_best_node(
     ip_type: str = "all",
     min_health: int = 0,
     avoid_risk_anomaly: bool = False,
+    include_unknown_ip_type: bool = True,
 ) -> dict[str, Any] | None:
     """从共享节点池中挑选最优节点（纯函数，便于单元测试）。
 
@@ -569,19 +577,11 @@ def select_best_node(
     else:
         cands = list(nodes)
 
-    # 与 apply_routing_filters 保持一致：开启类型过滤时，尚未识别（unknown/空）
-    # 的节点也允许参与选择。子出口消费共享池时，父进程可能还没完成类型识别，
-    # 若直接把 unknown 全部丢弃，会导致"设置了住宅 IP 却无节点可连"。
-    def _ip_type_allowed(n: dict[str, Any]) -> bool:
-        t = n.get("ip_type") or "unknown"
-        if ip_type == "residential":
-            return t in ("residential", "mobile", "unknown") or t == ""
-        if ip_type == "hosting":
-            return t in ("hosting", "unknown") or t == ""
-        return True
-
+    # 与 apply_routing_filters 复用同一套 IP 类型判定（node_passes_ip_type），
+    # 默认 include_unknown_ip_type=True：子出口消费共享池时，父进程可能还没完成
+    # 类型识别，若把 unknown 全部丢弃会导致"设置了住宅 IP 却无节点可连"。
     if ip_type in ("residential", "hosting"):
-        cands = [n for n in cands if _ip_type_allowed(n)]
+        cands = [n for n in cands if node_passes_ip_type(n.get("ip_type"), ip_type, include_unknown_ip_type)]
 
     if min_health > 0:
         cands = [n for n in cands if effective_health_score(n) >= min_health]

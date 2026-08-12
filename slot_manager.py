@@ -16,11 +16,13 @@ from __future__ import annotations
 import os
 import re
 import signal
+import shutil
 import socket
 import subprocess
 import sys
 import threading
 import time
+import urllib.request
 from pathlib import Path
 from typing import Any
 
@@ -304,7 +306,6 @@ class RegionProcess:
         if sys.platform.startswith("win"):
             return
         try:
-            import signal
             proc_root = Path("/proc")
             if not proc_root.exists():
                 return
@@ -379,13 +380,21 @@ class SlotOrchestrator:
 
     def _publish_shared_pool(self) -> None:
         """把父进程（默认出口）已抓取并测速的节点池发布到共享文件，
-        供所有子出口进程消费，从而实现"只拉取一次、共用一个节点池"。"""
+        供所有子出口进程消费，从而实现"只拉取一次、共用一个节点池"。
+
+        内容未变（大小相同且文件修改时间基本一致）时跳过整文件复制，省 IO。
+        """
         try:
-            import shutil
             src = self.base_data_dir / "nodes.json"
             dst = self.base_data_dir / "shared_nodes.json"
-            if src.exists():
-                shutil.copyfile(src, dst)
+            if not src.exists():
+                return
+            if dst.exists():
+                s_stat = src.stat()
+                d_stat = dst.stat()
+                if s_stat.st_size == d_stat.st_size and abs(s_stat.st_mtime - d_stat.st_mtime) < 1.0:
+                    return
+            shutil.copyfile(src, dst)
         except Exception:
             pass
 
@@ -548,7 +557,6 @@ class SlotOrchestrator:
         返回 (是否健康, 失败原因/空字符串)。
         """
         try:
-            import urllib.request
             with urllib.request.urlopen(
                 urllib.request.Request(f"http://127.0.0.1:{rp.ui_port}/api/egress_status", method="GET"),
                 timeout=2,

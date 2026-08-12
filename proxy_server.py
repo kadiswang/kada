@@ -2,6 +2,7 @@
 from __future__ import annotations
 import base64
 import os
+import random
 import secrets
 import select
 import socket
@@ -99,7 +100,6 @@ def check_credentials(username: str | None, password: str | None) -> bool:
     return secrets.compare_digest(username or "", expected_user) and secrets.compare_digest(password or "", expected_pass)
 
 def dns_query_over_tun0(host: str, qtype: int, dns_server: str, timeout: float) -> str | None:
-    import random
     sock = None
     try:
         tx_id = random.getrandbits(16).to_bytes(2, "big")
