@@ -29,6 +29,7 @@ if _ROOT not in sys.path:
 
 import vpngate_manager as m  # noqa: E402
 import vpn_utils as vu  # noqa: E402
+import nodes as nd  # noqa: E402
 
 
 class TestParseInt(unittest.TestCase):
@@ -230,6 +231,63 @@ class TestDiagnoseOpenvpnFailure(unittest.TestCase):
         code, msg = vu.diagnose_openvpn_failure(tail)
         self.assertEqual(code, 2005)
         self.assertIn("身份验证失败", msg)
+
+
+class TestIsRiskAnomaly(unittest.TestCase):
+    def test_clean_when_low_risk_and_not_flagged(self):
+        self.assertFalse(nd.is_risk_anomaly({"risk_score": 30, "is_flagged_proxy": False}))
+
+    def test_anomaly_when_risk_at_threshold(self):
+        self.assertTrue(nd.is_risk_anomaly({"risk_score": 70, "is_flagged_proxy": False}))
+
+    def test_anomaly_when_risk_high(self):
+        self.assertTrue(nd.is_risk_anomaly({"risk_score": 85, "is_flagged_proxy": False}))
+
+    def test_anomaly_when_flagged_proxy(self):
+        # 综合口径：被风控库标记为代理也算异常（VPNGate 节点普遍命中）。
+        self.assertTrue(nd.is_risk_anomaly({"risk_score": 20, "is_flagged_proxy": True}))
+
+    def test_no_intel_is_not_anomaly(self):
+        # 尚未查过 IP 情报的节点不判异常（无数据 ≠ 异常）。
+        self.assertFalse(nd.is_risk_anomaly({"risk_score": None}))
+        self.assertFalse(nd.is_risk_anomaly({}))
+
+    def test_risk_string_parsed(self):
+        self.assertTrue(nd.is_risk_anomaly({"risk_score": "88", "is_flagged_proxy": False}))
+
+
+class TestAvoidRiskAnomalyFilter(unittest.TestCase):
+    def _nodes(self):
+        return [
+            {"id": "clean_low", "risk_score": 30, "is_flagged_proxy": False},
+            {"id": "clean_none", "is_flagged_proxy": False},  # 未查过情报，不算异常
+            {"id": "anom_risk", "risk_score": 85, "is_flagged_proxy": False},
+            {"id": "anom_flag", "risk_score": 20, "is_flagged_proxy": True},
+        ]
+
+    def test_avoid_prefers_clean_nodes(self):
+        cfg = {"routing_mode": "auto", "avoid_risk_anomaly": True}
+        out = m.apply_routing_filters(self._nodes(), cfg)
+        ids = {n["id"] for n in out}
+        self.assertIn("clean_low", ids)
+        self.assertIn("clean_none", ids)
+        self.assertNotIn("anom_risk", ids)
+        self.assertNotIn("anom_flag", ids)
+
+    def test_avoid_off_keeps_all(self):
+        cfg = {"routing_mode": "auto", "avoid_risk_anomaly": False}
+        out = m.apply_routing_filters(self._nodes(), cfg)
+        self.assertEqual({n["id"] for n in out}, {"clean_low", "clean_none", "anom_risk", "anom_flag"})
+
+    def test_avoid_fallback_keeps_anomalous_when_only_ones(self):
+        # 若无异常节点可用，异常节点兜底保留（保证不断网）。
+        nodes = [
+            {"id": "anom_risk", "risk_score": 85, "is_flagged_proxy": False},
+            {"id": "anom_flag", "risk_score": 20, "is_flagged_proxy": True},
+        ]
+        cfg = {"routing_mode": "auto", "avoid_risk_anomaly": True}
+        out = m.apply_routing_filters(nodes, cfg)
+        self.assertEqual({n["id"] for n in out}, {"anom_risk", "anom_flag"})
 
 
 if __name__ == "__main__":

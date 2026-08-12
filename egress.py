@@ -115,6 +115,7 @@ def _get_egress_routing_config(slot_id: str) -> dict:
             "force_country": ui_cfg.get("force_country", ""),
             "routing_ip_type": ui_cfg.get("routing_ip_type", "all"),
             "min_health_score": int(ui_cfg.get("min_health_score", 0) or 0),
+            "avoid_risk_anomaly": bool(ui_cfg.get("avoid_risk_anomaly", False)),
             "fixed_node_id": ui_cfg.get("fixed_node_id", ""),
             "connection_enabled": bool(ui_cfg.get("connection_enabled", True)),
             "region": "",
@@ -128,6 +129,7 @@ def _get_egress_routing_config(slot_id: str) -> dict:
                 "force_country": cfg.get("force_country") or s.get("region") or "",
                 "routing_ip_type": cfg.get("routing_ip_type", "all"),
                 "min_health_score": int(cfg.get("min_health_score") or s.get("min_health_score") or 0),
+                "avoid_risk_anomaly": bool(cfg.get("avoid_risk_anomaly", False)),
                 "fixed_node_id": cfg.get("fixed_node_id") or s.get("fixed_node_id") or "",
                 "connection_enabled": True,  # 多出口默认开启，子进程按 ui_auth 自行控制
                 "region": str(s.get("region") or ""),
@@ -139,6 +141,7 @@ def _get_egress_routing_config(slot_id: str) -> dict:
         "force_country": "",
         "routing_ip_type": "all",
         "min_health_score": 0,
+        "avoid_risk_anomaly": False,
         "fixed_node_id": "",
         "connection_enabled": True,
         "region": "",

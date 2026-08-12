@@ -1882,6 +1882,14 @@ INDEX_HTML = r"""<!doctype html>
               <span>不限</span><span>50</span><span>100</span>
             </div>
           </div>
+
+          <div class="form-group" style="margin-bottom: 16px;">
+            <label class="form-label" for="net_avoid_risk_anomaly" style="display: flex; align-items: center; gap: 8px; cursor: pointer;">
+              <input type="checkbox" id="net_avoid_risk_anomaly" style="width:16px;height:16px;accent-color:var(--primary);">
+              <span>优先避开风控异常节点</span>
+            </label>
+            <p class="form-hint" style="font-size: 11px; color: var(--text-muted); margin-top: 6px; line-height: 1.4;">自动选择/切换节点时优先选「风控分」列无异常标记的节点；若无异常节点可用，再退一步选有异常的（保证不断网）。需先开启「风控情报」才有数据。</p>
+          </div>
           
           <div id="net_routing_warning" class="form-hint" style="font-size: 12px; color: var(--text-secondary); line-height: 1.4; padding: 8px 12px; background: var(--surface-2); border: 1px solid var(--border); border-radius: 6px; margin-top: 8px;">
             ℹ️ <strong>自动配置</strong>：全自动测试并选择最佳IP。在使用过程中，如果当前连接节点没有失效，将不再更换IP；如果当前节点失效，系统将立刻秒级自动漂移到其他最快的可用节点。
@@ -3330,6 +3338,7 @@ async function loadHomeEgress() {
           homeEgressStatusList[i].routing_mode = c.routing_mode || "auto";
           homeEgressStatusList[i].force_country = c.force_country || "";
           homeEgressStatusList[i].routing_ip_type = c.routing_ip_type || "all";
+          homeEgressStatusList[i].avoid_risk_anomaly = !!c.avoid_risk_anomaly;
         }
       }
     } catch(cfgErr) { /* 静默失败，卡片显示默认值 */ }
@@ -3376,6 +3385,7 @@ async function loadEgress() {
           egressStatusList[i].force_country = c.force_country || "";
           egressStatusList[i].routing_ip_type = c.routing_ip_type || "all";
           egressStatusList[i].min_health_score = c.min_health_score || 0;
+          egressStatusList[i].avoid_risk_anomaly = !!c.avoid_risk_anomaly;
           egressStatusList[i].fixed_node_id = c.fixed_node_id || "";
         }
       }
@@ -3758,6 +3768,7 @@ async function renderEgressNodeList() {
         force_country: found.force_country,
         routing_ip_type: found.routing_ip_type,
         min_health_score: found.min_health_score || 0,
+        avoid_risk_anomaly: !!found.avoid_risk_anomaly,
         fixed_node_id: found.fixed_node_id || ""
       };
     }
@@ -4384,6 +4395,10 @@ function setNetEgress() {
   const lbl = $("health_score_label");
   if (lbl) lbl.textContent = mhs > 0 ? "≥ " + mhs + " 分" : "不限";
 
+  // 优先避开风控异常节点
+  const araEl = $("net_avoid_risk_anomaly");
+  if (araEl) araEl.checked = !!e.avoid_risk_anomaly;
+
   // 上游代理（全局，所有出口共用节点池，故从 state 读取）
   const up = (state && state.upstream_proxy) || {};
   $("net_upstream_enabled").checked = !!up.enabled;
@@ -4694,6 +4709,7 @@ async function saveNetwork(e) {
   const forceCountry = $("net_force_country").value;
   const routingIpType = $("net_routing_ip_type").value;
   const minHealthScore = parseInt($("net_min_health").value) || 0;
+  const avoidRiskAnomaly = !!($("net_avoid_risk_anomaly") && $("net_avoid_risk_anomaly").checked);
 
   const upstreamEnabled = $("net_upstream_enabled").checked;
   const upstreamType = $("net_upstream_type").value;
@@ -4734,6 +4750,7 @@ async function saveNetwork(e) {
         force_country: forceCountry,
         routing_ip_type: routingIpType,
         min_health_score: minHealthScore,
+        avoid_risk_anomaly: avoidRiskAnomaly,
         upstream_proxy: upstreamEnabled ? {
           enabled: true,
           type: upstreamType,

@@ -1726,6 +1726,7 @@ def maintain_shared_egress() -> None:
         fixed = ui_cfg.get("fixed_node_id") or ""
         ip_type = ui_cfg.get("routing_ip_type", "all")
         min_health = int(ui_cfg.get("min_health_score") or 0)
+        avoid_risk_anomaly = bool(ui_cfg.get("avoid_risk_anomaly"))
 
         nodes = read_json(Path(shared), [])
         if not nodes:
@@ -1738,7 +1739,7 @@ def maintain_shared_egress() -> None:
         except Exception as _we:
             print(f"[共享出口] 写入本地节点文件失败: {_we}", flush=True)
 
-        target = select_best_node(nodes, country=country, fixed_id=fixed, ip_type=ip_type, min_health=min_health)
+        target = select_best_node(nodes, country=country, fixed_id=fixed, ip_type=ip_type, min_health=min_health, avoid_risk_anomaly=avoid_risk_anomaly)
         if target is None:
             set_state(last_check_message="共享节点池中没有符合过滤条件的节点")
             return
@@ -2492,7 +2493,8 @@ class Handler(BaseHTTPRequestHandler):
                 force_country = str(payload.get("force_country") or "").strip()
                 routing_ip_type = str(payload.get("routing_ip_type") or "all").strip()
                 min_health_score = int(payload.get("min_health_score", 0)) or 0
-                
+                avoid_risk_anomaly = bool(payload.get("avoid_risk_anomaly", False))
+
                 try:
                     new_proxy_port_int = int(new_proxy_port)
                     if not (1024 <= new_proxy_port_int <= 65535):
@@ -2520,7 +2522,8 @@ class Handler(BaseHTTPRequestHandler):
                 ui_cfg["force_country"] = force_country
                 ui_cfg["routing_ip_type"] = routing_ip_type
                 ui_cfg["min_health_score"] = min_health_score
-                
+                ui_cfg["avoid_risk_anomaly"] = avoid_risk_anomaly
+
                 upstream_data = payload.get("upstream_proxy")
                 if upstream_data and isinstance(upstream_data, dict):
                     if upstream_data.get("enabled"):
@@ -2568,6 +2571,7 @@ class Handler(BaseHTTPRequestHandler):
                 force_country = str(payload.get("force_country") or "").strip()
                 routing_ip_type = str(payload.get("routing_ip_type") or "all").strip()
                 min_health_score = int(payload.get("min_health_score", 0)) or 0
+                avoid_risk_anomaly = bool(payload.get("avoid_risk_anomaly", False))
                 fav_fail_fallback = bool(payload.get("fav_fail_fallback", True))
                 
                 if routing_mode not in ("auto", "fixed_ip", "fixed_region", "favorites"):
@@ -2582,6 +2586,7 @@ class Handler(BaseHTTPRequestHandler):
                 ui_cfg["force_country"] = force_country
                 ui_cfg["routing_ip_type"] = routing_ip_type
                 ui_cfg["min_health_score"] = min_health_score
+                ui_cfg["avoid_risk_anomaly"] = avoid_risk_anomaly
                 ui_cfg["fav_fail_fallback"] = fav_fail_fallback
                 ui_cfg.pop("enable_force_country", None)
                 
@@ -2927,6 +2932,7 @@ class Handler(BaseHTTPRequestHandler):
                 force_country = str(payload.get("force_country") or "").strip()
                 routing_ip_type = str(payload.get("routing_ip_type") or "all").strip()
                 min_health_score = int(payload.get("min_health_score", 0)) or 0
+                avoid_risk_anomaly = bool(payload.get("avoid_risk_anomaly", False))
                 if routing_mode not in ("auto", "fixed_ip", "fixed_region", "favorites"):
                     self.send_json({"ok": False, "error": "无效的路由配置模式"}); return
                 if routing_ip_type not in ("all", "residential", "hosting"):
@@ -2937,6 +2943,7 @@ class Handler(BaseHTTPRequestHandler):
                     ui_cfg["force_country"] = force_country
                     ui_cfg["routing_ip_type"] = routing_ip_type
                     ui_cfg["min_health_score"] = min_health_score
+                    ui_cfg["avoid_risk_anomaly"] = avoid_risk_anomaly
                     ui_cfg.pop("enable_force_country", None)
                     with lock:
                         DATA_DIR.mkdir(exist_ok=True, parents=True)
@@ -2954,6 +2961,7 @@ class Handler(BaseHTTPRequestHandler):
                         "force_country": force_country,
                         "routing_ip_type": routing_ip_type,
                         "min_health_score": min_health_score,
+                        "avoid_risk_anomaly": avoid_risk_anomaly,
                     }))
             except Exception as exc:
                 self.send_json({"ok": False, "error": str(exc)}, HTTPStatus.INTERNAL_SERVER_ERROR)
@@ -2968,6 +2976,7 @@ class Handler(BaseHTTPRequestHandler):
                 force_country = str(payload.get("force_country") or "").strip()
                 routing_ip_type = str(payload.get("routing_ip_type") or "all").strip()
                 min_health_score = int(payload.get("min_health_score", 0) or 0)
+                avoid_risk_anomaly = bool(payload.get("avoid_risk_anomaly", False))
                 upstream_proxy = payload.get("upstream_proxy")
                 if not isinstance(upstream_proxy, dict):
                     upstream_proxy = {"enabled": False}
@@ -2993,6 +3002,7 @@ class Handler(BaseHTTPRequestHandler):
                     ui_cfg["force_country"] = force_country
                     ui_cfg["routing_ip_type"] = routing_ip_type
                     ui_cfg["min_health_score"] = min_health_score
+                    ui_cfg["avoid_risk_anomaly"] = avoid_risk_anomaly
                     ui_cfg.pop("enable_force_country", None)
                     with lock:
                         DATA_DIR.mkdir(exist_ok=True, parents=True)
@@ -3013,6 +3023,7 @@ class Handler(BaseHTTPRequestHandler):
                             cfg["force_country"] = force_country
                             cfg["routing_ip_type"] = routing_ip_type
                             cfg["min_health_score"] = min_health_score
+                            cfg["avoid_risk_anomaly"] = avoid_risk_anomaly
                             s["config"] = cfg
                             break
                     ui_cfg["slots"] = slots
@@ -3038,6 +3049,7 @@ class Handler(BaseHTTPRequestHandler):
                                 "force_country": force_country,
                                 "routing_ip_type": routing_ip_type,
                                 "min_health_score": min_health_score,
+                                "avoid_risk_anomaly": avoid_risk_anomaly,
                             })
                         except Exception as exc:
                             fwd_result = {"ok": False, "error": f"子出口通信失败: {exc}"}
@@ -3242,6 +3254,7 @@ def aggregate_egress_status() -> list[dict[str, Any]]:
             "force_country": route_cfg.get("force_country", ""),
             "routing_ip_type": route_cfg.get("routing_ip_type", "all"),
             "min_health_score": int(route_cfg.get("min_health_score", 0) or 0),
+            "avoid_risk_anomaly": bool(route_cfg.get("avoid_risk_anomaly", False)),
             "fixed_node_id": route_cfg.get("fixed_node_id", ""),
             "connection_enabled": bool(route_cfg.get("connection_enabled", True)),
         }

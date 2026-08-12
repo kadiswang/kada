@@ -425,7 +425,36 @@ def apply_routing_filters(
     if min_health > 0:
         candidates = [n for n in candidates if effective_health_score(n) >= min_health]
 
+    # 优先避开风控异常节点：先保留无异常节点；若无异常节点可用，再退一步
+    # 把异常节点放回候选（保证不断网）。异常口径与前端 isRiskAnomaly 一致：
+    # 风控分 ≥ 阈值 或 已被风控库标记为代理。
+    if ui_cfg.get("avoid_risk_anomaly"):
+        clean = [n for n in candidates if not is_risk_anomaly(n)]
+        if clean:
+            candidates = clean
+
     return candidates
+
+
+# 风控异常阈值：与前端 web.py RISK_ANOMALY_THRESHOLD 保持一致
+RISK_ANOMALY_THRESHOLD = 70
+
+
+def is_risk_anomaly(node: dict[str, Any]) -> bool:
+    """判断节点是否触发「风控异常」（与前端 isRiskAnomaly 同一口径）。
+
+    - 风控分（proxycheck risk）≥ 阈值（越高越危险）
+    - 或已被风控库标记为代理
+    任一满足即为异常。尚未查过 IP 情报的节点不判异常（无数据 ≠ 异常）。
+    """
+    if not node:
+        return False
+    risk = parse_int(node.get("risk_score"))
+    if risk and risk >= RISK_ANOMALY_THRESHOLD:
+        return True
+    if node.get("is_flagged_proxy"):
+        return True
+    return False
 
 
 def effective_health_score(node: dict[str, Any]) -> int:
@@ -523,12 +552,14 @@ def select_best_node(
     fixed_id: str = "",
     ip_type: str = "all",
     min_health: int = 0,
+    avoid_risk_anomaly: bool = False,
 ) -> dict[str, Any] | None:
     """从共享节点池中挑选最优节点（纯函数，便于单元测试）。
 
-    - 指定 fixed_id：仅在该节点中挑选。
+    - 指定 fixed_id：仅在该节点中挑选（锁定节点不受 avoid_risk_anomaly 影响）。
     - 指定 country：仅保留匹配国家（normalized 比较）的节点。
     - ip_type / min_health：按类型与健康度过滤。
+    - avoid_risk_anomaly：优先在无风控异常的节点里选；无异常节点可用时才退一步选异常的。
     - 优先返回已被测速标记为 available 的节点；否则退回到非 unavailable 的节点。
     """
     if fixed_id:
@@ -554,6 +585,13 @@ def select_best_node(
 
     if min_health > 0:
         cands = [n for n in cands if effective_health_score(n) >= min_health]
+
+    # 优先避开风控异常节点（仅当未锁定固定 IP 时生效；锁定节点用户明确指定，不覆盖）。
+    # 先在无异常节点里选；若无异常节点可用，则保留全部（异常节点兜底，保证不断网）。
+    if avoid_risk_anomaly:
+        clean_cands = [n for n in cands if not is_risk_anomaly(n)]
+        if clean_cands:
+            cands = clean_cands
 
     available = [n for n in cands if n.get("probe_status") == "available"]
     available.sort(key=probe_priority_key)
